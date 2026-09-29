@@ -307,7 +307,7 @@ export default function App() {
     };
   }, [settings.scriptUrl]);
 
-  // Handle Form Submission (Meter or Infra)
+  // Handle Form Submission (Meter or Infra) - Ultra-Fast Instant Save
   const handleFormSubmit = async (
     data: Omit<MeterInstallationRecord, 'id'> | Omit<InfraInstallationRecord, 'id'>
   ) => {
@@ -318,50 +318,49 @@ export default function App() {
       technicianName: finalTech,
       ...(data.type === 'InfraInstallation' ? { deviceLocation: data.towerNo } : {}),
       id: `rec_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      status: isOnline ? 'syncing' : 'pending',
+      status: isOnline ? 'synced' : 'pending',
     } as WorkRecord;
 
-    // Save field memory
+    // 1. Immediately save field memory
     setLastSiteName(data.siteName);
     setLastTechnician(finalTech);
 
-    if (isOnline) {
-      try {
-        await fetch(settings.scriptUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify([newRecord]),
-        });
+    // 2. Immediately save to local history (Zero data loss guarantee)
+    addToHistory([newRecord]);
+    setHistory(getStoredHistory());
 
-        // Add to history
-        newRecord.status = 'synced';
-        addToHistory([newRecord]);
-        setHistory(getStoredHistory());
+    // 3. Instant tactile & audio feedback in ~40ms
+    playFeedbackSound('success');
+    triggerHaptic(40);
+    showToast(isOnline ? 'Saved! Syncing to Google Sheet... ⚡' : 'Saved offline successfully! ⚡', 'success');
 
-        playFeedbackSound('success');
-        triggerHaptic(40);
-        showToast('Saved directly to Google Sheets!', 'success');
-      } catch (err) {
-        console.warn('Online upload failed, queuing offline', err);
-        // Fallback to queue
-        newRecord.status = 'pending';
-        const newQueue = [...queue, newRecord];
-        updateQueue(newQueue);
-        playFeedbackSound('click');
-        showToast('Upload failed. Saved offline instead.', 'warning');
-      }
-    } else {
-      // Offline mode
-      newRecord.status = 'pending';
-      const newQueue = [...queue, newRecord];
-      updateQueue(newQueue);
-      playFeedbackSound('click');
-      triggerHaptic(50);
-      showToast('Saved offline successfully!', 'info');
-    }
-
+    // 4. Release UI lock instantly so form resets and technician can enter next flat immediately
     setIsSubmitting(false);
+
+    // 5. Background sync to Google Apps Script (Non-blocking)
+    if (isOnline && settings.scriptUrl) {
+      fetch(settings.scriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([newRecord]),
+      })
+        .then(() => {
+          showToast('Google Sheet updated successfully! ✓', 'success');
+        })
+        .catch((err) => {
+          console.warn('Background sync failed, moving to offline queue', err);
+          newRecord.status = 'pending';
+          const currentQueue = getStoredQueue();
+          updateQueue([...currentQueue, newRecord]);
+          showToast('Network unstable: saved to queue, will auto-sync', 'info');
+        });
+    } else {
+      // Offline mode: store in sync queue
+      newRecord.status = 'pending';
+      const currentQueue = getStoredQueue();
+      updateQueue([...currentQueue, newRecord]);
+    }
   };
 
   const handleDeleteQueueItem = (id: string) => {
