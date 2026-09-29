@@ -35,7 +35,7 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
   sheetExistingDeviceNos = [],
 }) => {
   const [formData, setFormData] = useState({
-    technicianName: defaultTechnician || '',
+    technicianName: '',
     company: '',
     vertical: '' as VerticalType,
     siteName: defaultSiteName || '',
@@ -49,12 +49,6 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
   const [isCustomCompany, setIsCustomCompany] = useState(false);
   const [customCompanyText, setCustomCompanyText] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
-
-  React.useEffect(() => {
-    if (defaultTechnician) {
-      setFormData((prev) => ({ ...prev, technicianName: defaultTechnician }));
-    }
-  }, [defaultTechnician]);
 
   // Check if deviceNo / serial already exists in local history/queue OR directly in Google Sheet
   const trimmedDeviceNo = formData.deviceNo.trim().toUpperCase();
@@ -129,11 +123,11 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
       createdAt: Date.now(),
     });
 
-    // Reset inputs but preserve technician, company, vertical and siteName
+    // Reset inputs to clean blank state
     setFormData((prev) => ({
-      technicianName: prev.technicianName,
-      company: prev.company,
-      vertical: prev.vertical,
+      technicianName: '',
+      company: '',
+      vertical: '' as VerticalType,
       siteName: prev.siteName,
       towerNo: '',
       deviceNo: '',
@@ -171,30 +165,21 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
           <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
             Technician Name <span className="text-rose-500">*</span>
           </label>
-          {defaultTechnician ? (
-            <div className="w-full px-3.5 py-2.5 bg-slate-100/80 border border-slate-200 rounded-xl text-sm font-bold text-slate-800 flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold">
-                {formData.technicianName.charAt(0)}
-              </span>
-              <span>{formData.technicianName}</span>
-            </div>
-          ) : (
-            <select
-              name="technicianName"
-              value={formData.technicianName}
-              onChange={handleChange}
-              className={`w-full px-3.5 py-2.5 bg-slate-50 border rounded-xl text-sm font-medium text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition ${
-                errors.technicianName ? 'border-rose-400 bg-rose-50/30' : 'border-slate-200'
-              }`}
-            >
-              <option value="">-- Select Technician --</option>
-              {technicians.map((tech) => (
-                <option key={tech} value={tech}>
-                  {tech}
-                </option>
-              ))}
-            </select>
-          )}
+          <select
+            name="technicianName"
+            value={formData.technicianName}
+            onChange={handleChange}
+            className={`w-full px-3.5 py-2.5 bg-slate-50 border rounded-xl text-sm font-medium text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition ${
+              errors.technicianName ? 'border-rose-400 bg-rose-50/30' : 'border-slate-200'
+            }`}
+          >
+            <option value="">-- Select Technician --</option>
+            {technicians.map((tech) => (
+              <option key={tech} value={tech}>
+                {tech}
+              </option>
+            ))}
+          </select>
           {errors.technicianName && (
             <p className="mt-1 text-xs text-rose-500 flex items-center gap-1">
               <AlertCircle className="w-3 h-3" /> {errors.technicianName}
