@@ -203,7 +203,7 @@ export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
                   }}
                   className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
                 >
-                  <option value="">-- Select Technician Name --</option>
+                  <option value="">Select Technician Name</option>
                   {settings.technicians.map((tech) => (
                     <option key={tech} value={tech}>
                       {tech}

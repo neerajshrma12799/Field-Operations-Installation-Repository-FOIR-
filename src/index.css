@@ -36,3 +36,18 @@
   animation: pulse-subtle 2s infinite ease-in-out;
 }
 
+/* Force hide Netlify injected floating badges and drawers that block UI buttons */
+#netlify-drawer,
+[data-netlify-drawer],
+[id*="netlify-drawer"],
+iframe[id*="netlify"],
+div[class*="netlify-badge"],
+[aria-label="Powered by Netlify"],
+[title*="Netlify"],
+a[href*="netlify.com"][class*="badge"],
+div[style*="z-index"][style*="bottom:"][style*="right:"] a[href*="netlify"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

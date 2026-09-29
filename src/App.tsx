@@ -767,7 +767,7 @@ export default function App() {
                   meterMakes={settings.meterMakes || []}
                   companies={settings.companies || []}
                   verticals={settings.verticals}
-                  defaultTechnician=""
+                  defaultTechnician={currentUser || ''}
                   defaultSiteName={lastSiteName}
                   onSiteNameChange={setLastSiteName}
                   onPreviewPhoto={(url, title) => setPreviewPhoto({ url, title })}
@@ -790,7 +790,7 @@ export default function App() {
                   technicians={settings.technicians}
                   companies={settings.companies || []}
                   verticals={settings.verticals}
-                  defaultTechnician=""
+                  defaultTechnician={currentUser || ''}
                   defaultSiteName={lastSiteName}
                   onSiteNameChange={setLastSiteName}
                   onPreviewPhoto={(url, title) => setPreviewPhoto({ url, title })}

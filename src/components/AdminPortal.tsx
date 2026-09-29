@@ -1831,8 +1831,92 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
                 </form>
 
-                {/* Technician List Table */}
-                <div className="border border-slate-200 rounded-2xl overflow-hidden">
+                {/* Mobile Cards View (Phones < 640px) - Guarantees Delete is 100% visible and tap-friendly */}
+                <div className="sm:hidden space-y-2.5">
+                  {techList.map((tech, idx) => {
+                    const pass = techPasswords[tech] || '1234';
+                    const isEditing = editingTech === tech;
+
+                    return (
+                      <div
+                        key={tech}
+                        className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5 shadow-2xs"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="w-7 h-7 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-xs">
+                              {tech.charAt(0)}
+                            </span>
+                            <div>
+                              <div className="font-bold text-xs text-slate-900">{tech}</div>
+                              <div className="text-[10px] text-slate-400 font-mono">#{idx + 1} Technician</div>
+                            </div>
+                          </div>
+
+                          {/* Mobile Delete Button - Big, Clear & Tap-Friendly */}
+                          <button
+                            type="button"
+                            onClick={() => handlePromptRemoveTechnician(tech)}
+                            className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 active:scale-95 text-rose-600 rounded-lg text-xs font-bold flex items-center gap-1 border border-rose-200 transition cursor-pointer"
+                            title="Remove technician"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Delete</span>
+                          </button>
+                        </div>
+
+                        {/* PIN / Password row */}
+                        <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-xs">
+                          <span className="text-slate-500 font-medium">PIN / Password:</span>
+                          {isEditing ? (
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                value={editTechPasswordInput}
+                                onChange={(e) => setEditTechPasswordInput(e.target.value)}
+                                placeholder="New PIN"
+                                className="px-2 py-1 bg-white border border-indigo-400 rounded-lg text-xs font-mono font-bold w-24 focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleSaveTechPassword(tech)}
+                                className="px-2 py-1 bg-emerald-600 text-white rounded-lg text-xs font-bold flex items-center gap-0.5"
+                              >
+                                <Check className="w-3 h-3" /> Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingTech(null)}
+                                className="px-1.5 py-1 text-slate-400 hover:text-slate-600 text-xs"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono bg-white border border-slate-200 px-2 py-0.5 rounded-md font-bold text-slate-800">
+                                {pass}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingTech(tech);
+                                  setEditTechPasswordInput(pass);
+                                }}
+                                className="text-indigo-600 hover:text-indigo-800 font-semibold flex items-center gap-0.5 cursor-pointer"
+                              >
+                                <Edit2 className="w-3 h-3" /> Change
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Desktop / Tablet Table View (Hidden on Mobile) */}
+                <div className="hidden sm:block border border-slate-200 rounded-2xl overflow-x-auto">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead className="bg-slate-50 font-bold text-slate-600 border-b border-slate-200">
                       <tr>
@@ -1903,7 +1987,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handlePromptRemoveTechnician(tech)}
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
                                 title="Remove technician"
                               >
                                 <Trash2 className="w-4 h-4" />

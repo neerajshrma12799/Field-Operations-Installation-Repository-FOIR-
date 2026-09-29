@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { CloudUpload, Save, Loader2, Gauge, AlertCircle, Sparkles, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { CloudUpload, Save, Loader2, Gauge, AlertCircle, Sparkles, RefreshCw, Lock } from 'lucide-react';
 import { MeterInstallationRecord, VerticalType } from '../types';
 import { PhotoUploader } from './PhotoUploader';
 import { getIndianTimestamp } from '../utils/timestamp';
@@ -45,7 +45,7 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
   sheetExistingMeterNos = [],
 }) => {
   const [formData, setFormData] = useState({
-    technicianName: '',
+    technicianName: defaultTechnician || '',
     company: '',
     vertical: '' as VerticalType,
     siteName: defaultSiteName || '',
@@ -64,6 +64,12 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
   const [isCustomCompany, setIsCustomCompany] = useState(false);
   const [customCompanyText, setCustomCompanyText] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (defaultTechnician) {
+      setFormData((prev) => ({ ...prev, technicianName: defaultTechnician }));
+    }
+  }, [defaultTechnician]);
 
   // Check if current newMeterNo already exists in local history/queue OR directly in Google Sheet
   const trimmedNewMeter = formData.newMeterNo.trim().toUpperCase();
@@ -142,9 +148,9 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
       createdAt: Date.now(),
     });
 
-    // Reset inputs to clean blank state
+    // Reset inputs to clean blank state (technician stays locked if logged in)
     setFormData((prev) => ({
-      technicianName: '',
+      technicianName: defaultTechnician || '',
       company: '',
       vertical: '' as VerticalType,
       siteName: prev.siteName,
@@ -189,21 +195,36 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
           <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
             Technician Name <span className="text-rose-500">*</span>
           </label>
-          <select
-            name="technicianName"
-            value={formData.technicianName}
-            onChange={handleChange}
-            className={`w-full px-3.5 py-2.5 bg-slate-50 border rounded-xl text-sm font-medium text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition ${
-              errors.technicianName ? 'border-rose-400 bg-rose-50/30' : 'border-slate-200'
-            }`}
-          >
-            <option value="">-- Select Technician --</option>
-            {technicians.map((tech) => (
-              <option key={tech} value={tech}>
-                {tech}
-              </option>
-            ))}
-          </select>
+          {defaultTechnician ? (
+            <div className="w-full px-3.5 py-2.5 bg-slate-100/90 border border-slate-200 rounded-xl text-sm font-bold text-slate-800 flex items-center justify-between shadow-2xs">
+              <div className="flex items-center gap-2">
+                <span className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-black">
+                  {(formData.technicianName || defaultTechnician).charAt(0)}
+                </span>
+                <span>{formData.technicianName || defaultTechnician}</span>
+              </div>
+              <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-500 bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                <Lock className="w-3.5 h-3.5 text-slate-400" />
+                <span>Locked</span>
+              </div>
+            </div>
+          ) : (
+            <select
+              name="technicianName"
+              value={formData.technicianName}
+              onChange={handleChange}
+              className={`w-full px-3.5 py-2.5 bg-slate-50 border rounded-xl text-sm font-medium text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition ${
+                errors.technicianName ? 'border-rose-400 bg-rose-50/30' : 'border-slate-200'
+              }`}
+            >
+              <option value="">Select Technician</option>
+              {technicians.map((tech) => (
+                <option key={tech} value={tech}>
+                  {tech}
+                </option>
+              ))}
+            </select>
+          )}
           {errors.technicianName && (
             <p className="mt-1 text-xs text-rose-500 flex items-center gap-1">
               <AlertCircle className="w-3 h-3" /> {errors.technicianName}
@@ -243,7 +264,7 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
               onChange={handleChange}
               className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
             >
-              <option value="">-- Select Company --</option>
+              <option value="">Select Company</option>
               {companies.map((comp) => (
                 <option key={comp} value={comp}>
                   {comp}
@@ -282,7 +303,7 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
                 errors.vertical ? 'border-rose-400 bg-rose-50/30' : 'border-slate-200'
               }`}
             >
-              <option value="">-- Select Vertical --</option>
+              <option value="">Select Vertical</option>
               {verticals.map((vert) => (
                 <option key={vert} value={vert}>
                   {vert}
@@ -540,7 +561,7 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
                   errors.newMeterMake ? 'border-rose-400 bg-rose-50/30' : 'border-emerald-300'
                 }`}
               >
-                <option value="">-- Select Meter Make --</option>
+                <option value="">Select Meter Make</option>
                 {meterMakes.map((make) => (
                   <option key={make} value={make}>
                     {make}
