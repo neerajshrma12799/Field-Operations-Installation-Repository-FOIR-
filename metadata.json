@@ -1,0 +1,8 @@
+{
+  "name": "Meter & Infra Tracker",
+  "description": "Offline-capable field app for tracking Meter and Infrastructure installations with camera capture and Google Sheets synchronization.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

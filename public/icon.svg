@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4338ca" />
+      <stop offset="50%" stop-color="#4f46e5" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+    <linearGradient id="meter-dial" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="50%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#ef4444" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#1e1b4b" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded squircle with safe-zone margin -->
+  <rect width="512" height="512" rx="112" fill="url(#bg-grad)" />
+
+  <!-- Inner subtle grid lines -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="#ffffff" stroke-width="2" stroke-opacity="0.15" />
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#ffffff" stroke-width="2" stroke-opacity="0.1" />
+
+  <!-- Main Card Display Body (Electric Meter Box) -->
+  <rect x="116" y="116" width="280" height="280" rx="36" fill="#0f172a" filter="url(#shadow)" stroke="#334155" stroke-width="4"/>
+
+  <!-- Meter Digital Screen -->
+  <rect x="148" y="148" width="216" height="84" rx="14" fill="#020617" stroke="#1e293b" stroke-width="2"/>
+  
+  <!-- Digital Digits -->
+  <text x="256" y="196" fill="#34d399" font-family="monospace, -apple-system, sans-serif" font-size="34" font-weight="900" letter-spacing="4" text-anchor="middle">
+    08429.5
+  </text>
+  <text x="340" y="218" fill="#94a3b8" font-family="sans-serif" font-size="12" font-weight="700">kWh</text>
+
+  <!-- Infra status / indicator LEDs -->
+  <circle cx="166" cy="254" r="7" fill="#10b981"/>
+  <circle cx="192" cy="254" r="7" fill="#3b82f6"/>
+  <circle cx="218" cy="254" r="7" fill="#f59e0b"/>
+
+  <!-- Gauge Arc -->
+  <path d="M 160 330 A 100 100 0 0 1 352 330" fill="none" stroke="url(#meter-dial)" stroke-width="12" stroke-linecap="round"/>
+  
+  <!-- Gauge Needle Center & Pointer -->
+  <circle cx="256" cy="326" r="16" fill="#f8fafc"/>
+  <circle cx="256" cy="326" r="8" fill="#4f46e5"/>
+  <polygon points="252,324 256,262 260,324" fill="#ef4444"/>
+
+  <!-- Antenna / Tower Infra Symbol at top right -->
+  <g transform="translate(330, 240) scale(0.65)" fill="#60a5fa">
+    <path d="M12 2a10 10 0 0 1 10 10 10 10 0 0 1-10 10A10 10 0 0 1 2 12 10 10 0 0 1 12 2zm0 3a7 7 0 0 0-7 7 7 7 0 0 0 7 7 7 7 0 0 0 7-7 7 7 0 0 0-7-7zm0 3a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4zm0 2a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/>
+  </g>
+</svg>
