@@ -1,7 +1,9 @@
 import { AppSettings, WorkRecord } from '../types';
 
 export const DEFAULT_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbzP-lgydlMTyTYTuvpyymUfRfD0YWa8BSMHBOAgZ6B5bFXAQd1Xw7CVaAF_WmykE9TB/exec';
+  (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env.VITE_GOOGLE_SCRIPT_URL)
+    ? String((import.meta as any).env.VITE_GOOGLE_SCRIPT_URL).trim()
+    : 'https://script.google.com/macros/s/AKfycbzP-lgydlMTyTYTuvpyymUfRfD0YWa8BSMHBOAgZ6B5bFXAQd1Xw7CVaAF_WmykE9TB/exec';
 
 const BROKEN_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbxjHS9zW3s8uJHqgCKx4jXIHetqCUv3pApMgIlGPEDbMuYPbAWxBp_nYsLDSLeFxxd0/exec';
@@ -25,6 +27,41 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoSync: true,
   hapticFeedback: true,
   soundEnabled: true,
+};
+
+export const fetchServerConfig = async (): Promise<{ scriptUrl?: string } | null> => {
+  try {
+    const res = await fetch('/api/config', { method: 'GET' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.status === 'success' && data.scriptUrl && data.scriptUrl.startsWith('http')) {
+        return { scriptUrl: data.scriptUrl.trim() };
+      }
+    }
+  } catch {
+    // Backend endpoint not reachable (e.g. static hosting)
+  }
+  return null;
+};
+
+export const saveServerConfig = async (
+  scriptUrl: string,
+  adminPassword: string
+): Promise<{ success: boolean; message: string }> => {
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scriptUrl: scriptUrl.trim(), adminPassword: adminPassword.trim() }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === 'success') {
+      return { success: true, message: data.message || 'URL permanently saved on server backend!' };
+    }
+    return { success: false, message: data.message || 'Server returned error' };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Could not connect to backend server' };
+  }
 };
 
 const QUEUE_KEY = 'syncQueue';
@@ -193,6 +230,7 @@ export const getStoredSettings = (): AppSettings => {
       ...DEFAULT_SETTINGS,
       ...parsed,
       scriptUrl: resolvedScriptUrl,
+      sheetStats: parsed.sheetStats,
       technicianPasswords: parsed.technicianPasswords || {},
       defaultPassword: parsed.defaultPassword || '1234',
       meterMakes: sanitizedMakes,
@@ -204,11 +242,10 @@ export const getStoredSettings = (): AppSettings => {
           : DEFAULT_TECHNICIANS,
     };
 
-    // If queryScriptUrl was found, persist it into localStorage and clean URL
+    // If queryScriptUrl was found, persist it into localStorage immediately
     if (queryScriptUrl) {
       try {
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(mergedSettings));
-        window.history.replaceState({}, document.title, window.location.pathname);
       } catch {}
     }
 

@@ -49,6 +49,7 @@ import {
   saveStoredSettings,
   getLoggedInTechnician,
   setLoggedInTechnician,
+  fetchServerConfig,
   triggerHaptic,
   playFeedbackSound,
 } from './utils/storage';
@@ -102,19 +103,39 @@ export default function App() {
     setQueue(loadedQueue);
     setHistory(loadedHistory);
 
-    // Fetch technicians from Google Apps Script if online
-    fetchRemoteTechnicians();
-
     // Check if shared link was loaded
+    let sharedScriptUrl: string | null = null;
     if (typeof window !== 'undefined' && window.location.search) {
       try {
         const urlParams = new URLSearchParams(window.location.search);
         const sharedScript = urlParams.get('scriptUrl') || urlParams.get('script') || urlParams.get('api');
         if (sharedScript && sharedScript.trim().startsWith('http')) {
-          showToast('Google Sheet link auto-connected from shared link!', 'success');
+          sharedScriptUrl = sharedScript.trim();
+          showToast('Google Sheet link auto-connected! Syncing live data...', 'success');
         }
       } catch {}
     }
+
+    const scriptToFetch = sharedScriptUrl || settings.scriptUrl;
+    if (scriptToFetch && scriptToFetch.startsWith('http')) {
+      fetchRemoteTechnicians(scriptToFetch, false);
+    }
+
+    // Check backend server for globally saved Google Sheet URL
+    fetchServerConfig().then((serverCfg) => {
+      if (serverCfg && serverCfg.scriptUrl && serverCfg.scriptUrl.startsWith('http')) {
+        const backendUrl = serverCfg.scriptUrl;
+        setSettings((prev) => {
+          if (prev.scriptUrl !== backendUrl) {
+            const upd = { ...prev, scriptUrl: backendUrl };
+            saveStoredSettings(upd);
+            return upd;
+          }
+          return prev;
+        });
+        fetchRemoteTechnicians(backendUrl, false);
+      }
+    });
   }, []);
 
   // Save queue changes to localStorage
@@ -123,14 +144,22 @@ export default function App() {
     saveStoredQueue(newQueue);
   };
 
-  const fetchRemoteTechnicians = async (isManual = false) => {
-    if (!navigator.onLine) {
-      if (isManual) showToast('Device is offline. Using cached data.', 'warning');
+  const fetchRemoteTechnicians = async (
+    urlOrManual?: string | boolean,
+    maybeManual = false
+  ) => {
+    const isManual = typeof urlOrManual === 'boolean' ? urlOrManual : maybeManual;
+    const urlOverride = typeof urlOrManual === 'string' ? urlOrManual : undefined;
+    const currentUrl = (urlOverride && urlOverride.trim().startsWith('http'))
+      ? urlOverride.trim()
+      : settings.scriptUrl;
+
+    if (!currentUrl || !currentUrl.startsWith('http')) {
       return;
     }
+
     try {
       setIsRefreshingSheet(true);
-      const currentUrl = settings.scriptUrl;
       const res = await fetch(`${currentUrl}?action=getTechnicians`, { method: 'GET' });
       const data = await res.json();
       if (data && data.status === 'success') {
@@ -146,6 +175,8 @@ export default function App() {
 
         setSettings((prev) => {
           const updated = { ...prev };
+          updated.scriptUrl = currentUrl;
+
           if (Array.isArray(data.technicians) && data.technicians.length > 0) {
             updated.technicians = data.technicians;
           }
@@ -214,15 +245,24 @@ export default function App() {
         if (Array.isArray(data.sheetRecords) && data.sheetRecords.length > 0) {
           const currentHist = getStoredHistory();
           const histMap = new Map<string, WorkRecord>();
+
+          const getRecKey = (r: any) => {
+            if (r.type === 'MeterInstallation' && r.newMeterNo && String(r.newMeterNo).trim()) {
+              return `meter_${String(r.newMeterNo).trim().toUpperCase()}`;
+            }
+            if (r.type === 'InfraInstallation' && r.deviceNo && String(r.deviceNo).trim()) {
+              return `infra_${String(r.deviceNo).trim().toUpperCase()}`;
+            }
+            return r.id || `${r.type}_${r.timestamp}_${r.siteName || ''}`;
+          };
+
           // Existing local records
           currentHist.forEach((r) => {
-            const key = r.id || `${r.type}_${r.timestamp}_${(r as any).newMeterNo || (r as any).deviceNo || ''}`;
-            histMap.set(key, r);
+            histMap.set(getRecKey(r), r);
           });
           // Merge remote records from Google Sheets
           data.sheetRecords.forEach((remoteRec: WorkRecord) => {
-            const key = remoteRec.id || `${remoteRec.type}_${remoteRec.timestamp}_${(remoteRec as any).newMeterNo || (remoteRec as any).deviceNo || ''}`;
-            histMap.set(key, remoteRec);
+            histMap.set(getRecKey(remoteRec), remoteRec);
           });
           const merged = Array.from(histMap.values());
           setStoredHistory(merged);

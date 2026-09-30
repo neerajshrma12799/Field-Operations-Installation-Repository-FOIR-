@@ -40,7 +40,7 @@ import {
   Link,
 } from 'lucide-react';
 import { AppSettings, WorkRecord } from '../types';
-import { triggerHaptic, playFeedbackSound, exportRecordsToCSV } from '../utils/storage';
+import { triggerHaptic, playFeedbackSound, exportRecordsToCSV, saveServerConfig } from '../utils/storage';
 import {
   isDateInRange,
   isRecordToday,
@@ -142,6 +142,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [copiedLinkSuccess, setCopiedLinkSuccess] = useState(false);
   const [shortUrl, setShortUrl] = useState<string>('');
   const [isGeneratingShortUrl, setIsGeneratingShortUrl] = useState(false);
+  const [isSavingBackend, setIsSavingBackend] = useState(false);
+  const [backendSaveMsg, setBackendSaveMsg] = useState<{ success: boolean; text: string } | null>(null);
 
   // Sync state whenever settings change
   React.useEffect(() => {
@@ -536,6 +538,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     };
 
     onSaveSettings(updated);
+
+    // Automatically persist scriptUrl permanently to backend server
+    if (updated.scriptUrl) {
+      saveServerConfig(updated.scriptUrl, updated.adminPassword || 'admin').catch(() => {});
+    }
 
     if (syncRemote && isOnline && updated.scriptUrl) {
       setIsSyncingWithSheet(true);
@@ -2298,7 +2305,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       type="button"
                       onClick={handleTestApi}
                       disabled={isTestingApi}
-                      className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 active:scale-95 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition shrink-0"
+                      className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 active:scale-95 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition shrink-0 cursor-pointer"
                     >
                       {isTestingApi ? (
                         <>
@@ -2308,11 +2315,67 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       ) : (
                         <>
                           <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600" />
-                          <span>Test API Connection</span>
+                          <span>Test API</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const clean = scriptUrl.trim();
+                        if (!clean.startsWith('http')) {
+                          setBackendSaveMsg({ success: false, text: 'Please enter a valid Google Apps Script URL starting with https:// and ending in /exec' });
+                          return;
+                        }
+                        setIsSavingBackend(true);
+                        triggerHaptic(25);
+                        const res = await saveServerConfig(clean, adminPassword || 'admin');
+                        setIsSavingBackend(false);
+                        if (res.success) {
+                          playFeedbackSound('success');
+                          setBackendSaveMsg({
+                            success: true,
+                            text: '✅ Google Sheet URL Permanently Saved in Backend! Ab kisi bhi link ya Netlify se open karne par sabhi devices me yahi Google Sheet automatically connect hogi.'
+                          });
+                          persistChanges({ scriptUrl: clean }, true);
+                        } else {
+                          setBackendSaveMsg({ success: false, text: res.message });
+                        }
+                      }}
+                      disabled={isSavingBackend}
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition shadow-xs shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      {isSavingBackend ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving to Backend...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-3.5 h-3.5" />
+                          <span>Save to Backend (Permanent)</span>
                         </>
                       )}
                     </button>
                   </div>
+
+                  {/* Backend Save Feedback */}
+                  {backendSaveMsg && (
+                    <div
+                      className={`mt-2 p-2.5 rounded-xl border text-xs flex items-start gap-2 ${
+                        backendSaveMsg.success
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          : 'bg-rose-50 text-rose-800 border-rose-200'
+                      }`}
+                    >
+                      {backendSaveMsg.success ? (
+                        <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      )}
+                      <span>{backendSaveMsg.text}</span>
+                    </div>
+                  )}
 
                   {/* API Test Feedback */}
                   {apiTestResult && (
@@ -2358,96 +2421,106 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">Short Link Ready</span>
                   </div>
                   <p className="text-[11px] text-slate-600 leading-relaxed">
-                    Aapka Google Sheet URL app me default set ho chuka hai! Ab technicians ko lamba link bhejne ki zaroorat nahi hai. Niche diye gaye <strong>Clean Short Link</strong> ya <strong>TinyURL</strong> ko share karein:
+                    Aapka Google Sheet URL app link me embedded hai! Is link ko technicians ke saath share karein, unke phone me <strong>same Google Sheet connect ho jayegi aur exact Total Meter &amp; Total Infra Sum match karega</strong>:
                   </p>
 
-                  {/* Clean Short Direct Link display */}
-                  <div className="p-2.5 bg-white border border-slate-200 rounded-lg text-xs font-mono text-indigo-900 flex items-center justify-between break-all">
-                    <span>{shortUrl || `${window.location.origin}${window.location.pathname}`}</span>
-                    <span className="text-[10px] font-sans font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded shrink-0 ml-2">
-                      {shortUrl ? 'TinyURL' : 'Clean Short URL'}
-                    </span>
-                  </div>
+                  {/* Clean Direct Link display (Always includes Google Sheet connection) */}
+                  {(() => {
+                    const activeScriptToShare = scriptUrl.trim() || settings.scriptUrl || '';
+                    const fullConfigUrl = activeScriptToShare
+                      ? `${window.location.origin}${window.location.pathname}?scriptUrl=${encodeURIComponent(activeScriptToShare)}`
+                      : `${window.location.origin}${window.location.pathname}`;
+                    const currentShareLink = shortUrl || fullConfigUrl;
 
-                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                    {/* Copy Direct Clean Short Link */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        triggerHaptic(20);
-                        const linkToCopy = shortUrl || `${window.location.origin}${window.location.pathname}`;
-                        navigator.clipboard.writeText(linkToCopy);
-                        setCopiedLinkSuccess(true);
-                        setTimeout(() => setCopiedLinkSuccess(false), 3000);
-                      }}
-                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer"
-                    >
-                      {copiedLinkSuccess ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-300" />
-                          <span>Short Link Copied!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Short Link</span>
-                        </>
-                      )}
-                    </button>
+                    return (
+                      <>
+                        <div className="p-2.5 bg-white border border-slate-200 rounded-lg text-xs font-mono text-indigo-900 flex items-center justify-between break-all">
+                          <span className="truncate max-w-[80%]">{currentShareLink}</span>
+                          <span className="text-[10px] font-sans font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded shrink-0 ml-2">
+                            {shortUrl ? 'TinyURL' : 'Full Link'}
+                          </span>
+                        </div>
 
-                    {/* 1-Click TinyURL Shortener */}
-                    <button
-                      type="button"
-                      disabled={isGeneratingShortUrl}
-                      onClick={async () => {
-                        try {
-                          setIsGeneratingShortUrl(true);
-                          triggerHaptic(25);
-                          const full = `${window.location.origin}${window.location.pathname}?scriptUrl=${encodeURIComponent(scriptUrl.trim())}`;
-                          const res = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(full)}`);
-                          if (res.ok) {
-                            const tiny = await res.text();
-                            if (tiny && tiny.startsWith('http')) {
-                              setShortUrl(tiny.trim());
-                              navigator.clipboard.writeText(tiny.trim());
+                        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                          {/* Copy Direct Link */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              triggerHaptic(20);
+                              navigator.clipboard.writeText(currentShareLink);
                               setCopiedLinkSuccess(true);
                               setTimeout(() => setCopiedLinkSuccess(false), 3000);
-                            }
-                          }
-                        } catch (e) {
-                          console.warn('TinyURL generate error', e);
-                        } finally {
-                          setIsGeneratingShortUrl(false);
-                        }
-                      }}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 active:scale-95 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer disabled:opacity-50"
-                    >
-                      {isGeneratingShortUrl ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          <span>Creating TinyURL...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Link className="w-3.5 h-3.5 text-amber-300" />
-                          <span>{shortUrl ? 'Re-create TinyURL' : 'Make TinyURL (1-Click)'}</span>
-                        </>
-                      )}
-                    </button>
+                            }}
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer"
+                          >
+                            {copiedLinkSuccess ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-300" />
+                                <span>Link Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>Copy Connected App Link</span>
+                              </>
+                            )}
+                          </button>
 
-                    {/* WhatsApp share */}
-                    <a
-                      href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
-                        `Meter & Infra Field Work Tracker App Link:\n${shortUrl || `${window.location.origin}${window.location.pathname}`}\n\n(Is link ko phone me kholein, Google Sheet automatically connect ho jayegi)`
-                      )}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer no-underline"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Share on WhatsApp</span>
-                    </a>
-                  </div>
+                          {/* 1-Click TinyURL Shortener */}
+                          <button
+                            type="button"
+                            disabled={isGeneratingShortUrl}
+                            onClick={async () => {
+                              try {
+                                setIsGeneratingShortUrl(true);
+                                triggerHaptic(25);
+                                const res = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(fullConfigUrl)}`);
+                                if (res.ok) {
+                                  const tiny = await res.text();
+                                  if (tiny && tiny.startsWith('http')) {
+                                    setShortUrl(tiny.trim());
+                                    navigator.clipboard.writeText(tiny.trim());
+                                    setCopiedLinkSuccess(true);
+                                    setTimeout(() => setCopiedLinkSuccess(false), 3000);
+                                  }
+                                }
+                              } catch (e) {
+                                console.warn('TinyURL generate error', e);
+                              } finally {
+                                setIsGeneratingShortUrl(false);
+                              }
+                            }}
+                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 active:scale-95 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer disabled:opacity-50"
+                          >
+                            {isGeneratingShortUrl ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                <span>Creating TinyURL...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Link className="w-3.5 h-3.5 text-amber-300" />
+                                <span>{shortUrl ? 'Re-create TinyURL' : 'Make TinyURL (1-Click)'}</span>
+                              </>
+                            )}
+                          </button>
+
+                          {/* WhatsApp share */}
+                          <a
+                            href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                              `Meter & Infra Field Work Tracker App Link:\n${currentShareLink}\n\n(Is link ko phone me kholein, Google Sheet automatically connect ho jayegi aur Live Data sync ho jayega)`
+                            )}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer no-underline"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>Share on WhatsApp</span>
+                          </a>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
 
                 <div>
