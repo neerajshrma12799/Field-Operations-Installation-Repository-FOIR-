@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { CloudUpload, Save, Loader2, Gauge, AlertCircle, Sparkles, RefreshCw, Lock } from 'lucide-react';
 import { MeterInstallationRecord, VerticalType } from '../types';
 import { PhotoUploader } from './PhotoUploader';
-import { getIndianTimestamp } from '../utils/timestamp';
+import { getIndianTimestamp, areSerialsEqual } from '../utils/timestamp';
 import { triggerHaptic } from '../utils/storage';
 
 interface MeterInstallationFormProps {
@@ -71,17 +71,15 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
     }
   }, [defaultTechnician]);
 
-  // Check if current newMeterNo already exists in local history/queue OR directly in Google Sheet
-  const trimmedNewMeter = formData.newMeterNo.trim().toUpperCase();
-  const existingMeterDuplicate = trimmedNewMeter
-    ? existingRecords.find(
-        (r) => r.newMeterNo && r.newMeterNo.trim().toUpperCase() === trimmedNewMeter
-      )
+  // Robust check for meter number duplicates (alphanumeric, numeric, or alphabetic)
+  const rawNewMeter = formData.newMeterNo;
+  const existingMeterDuplicate = rawNewMeter && String(rawNewMeter).trim()
+    ? existingRecords.find((r) => areSerialsEqual(r.newMeterNo, rawNewMeter))
     : undefined;
 
   const existsInGoogleSheet =
-    trimmedNewMeter && !existingMeterDuplicate
-      ? sheetExistingMeterNos.some((no) => no.trim().toUpperCase() === trimmedNewMeter)
+    rawNewMeter && String(rawNewMeter).trim() && !existingMeterDuplicate
+      ? sheetExistingMeterNos.some((no) => areSerialsEqual(no, rawNewMeter))
       : false;
 
   const isDuplicateMeter = Boolean(existingMeterDuplicate || existsInGoogleSheet);
@@ -96,9 +94,9 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
     if (!formData.newMeterNo.trim()) {
       newErrors.newMeterNo = 'New meter number is required';
     } else if (existingMeterDuplicate) {
-      newErrors.newMeterNo = `Duplicate Entry: This meter number already exists! (Entered by ${existingMeterDuplicate.technicianName} on ${existingMeterDuplicate.siteName || 'site'})`;
+      newErrors.newMeterNo = `Duplicate Entry: Meter #${formData.newMeterNo} already exists! (Entered by ${existingMeterDuplicate.technicianName || 'tech'} on ${existingMeterDuplicate.siteName || 'site'})`;
     } else if (existsInGoogleSheet) {
-      newErrors.newMeterNo = 'Duplicate Entry: This meter number already exists in Google Sheet!';
+      newErrors.newMeterNo = `Duplicate Entry: Meter #${formData.newMeterNo} already exists in Google Sheet!`;
     }
 
     const finalMake = isCustomMake ? customMakeText.trim() : formData.newMeterMake.trim();

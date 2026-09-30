@@ -246,3 +246,41 @@ export const parseInfraQty = (val: any): number => {
   return isNaN(num) || num <= 0 ? 1 : num;
 };
 
+/**
+ * Universal serial / number normalizer:
+ * Safely cleans strings, numbers, alphanumerics, removes whitespace.
+ */
+export const normalizeSerial = (val: any): string => {
+  if (val === null || val === undefined) return '';
+  return String(val).trim().toUpperCase();
+};
+
+/**
+ * Deep equality check for meter & device serials:
+ * Works across pure numbers ("483903" vs 483903),
+ * pure alphabetic ("UT" vs "ut"),
+ * and alphanumeric ("A-379" vs "A379" vs "a 379").
+ */
+export const areSerialsEqual = (a: any, b: any): boolean => {
+  const normA = normalizeSerial(a);
+  const normB = normalizeSerial(b);
+  if (!normA || !normB) return false;
+
+  // 1. Direct match (case-insensitive & trimmed)
+  if (normA === normB) return true;
+
+  // 2. Alphanumeric match ignoring hyphens, underscores, dots and spaces
+  // e.g. "A-379" matches "A379" and "a 379"
+  const cleanA = normA.replace(/[^A-Z0-9]/g, '');
+  const cleanB = normB.replace(/[^A-Z0-9]/g, '');
+  if (cleanA && cleanB && cleanA === cleanB) return true;
+
+  // 3. Numeric match with leading zeroes if both are pure numbers
+  // e.g. "012345" matches "12345"
+  if (/^\d+$/.test(normA) && /^\d+$/.test(normB)) {
+    return parseInt(normA, 10) === parseInt(normB, 10);
+  }
+
+  return false;
+};
+

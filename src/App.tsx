@@ -53,6 +53,7 @@ import {
   triggerHaptic,
   playFeedbackSound,
 } from './utils/storage';
+import { areSerialsEqual } from './utils/timestamp';
 
 export default function App() {
   const isOnline = useOnlineStatus();
@@ -259,13 +260,16 @@ export default function App() {
           const histMap = new Map<string, WorkRecord>();
 
           const getRecKey = (r: any) => {
-            if (r.type === 'MeterInstallation' && r.newMeterNo && String(r.newMeterNo).trim()) {
-              return `meter_${String(r.newMeterNo).trim().toUpperCase()}`;
+            if (r.id && String(r.id).trim()) {
+              return String(r.id).trim();
             }
-            if (r.type === 'InfraInstallation' && r.deviceNo && String(r.deviceNo).trim()) {
-              return `infra_${String(r.deviceNo).trim().toUpperCase()}`;
-            }
-            return r.id || `${r.type}_${r.timestamp}_${r.siteName || ''}`;
+            const type = r.type || 'rec';
+            const num = r.newMeterNo || r.deviceNo || '';
+            const ts = r.timestamp || r.installationDate || '';
+            const site = r.siteName || '';
+            const tech = r.technicianName || '';
+            const loc = r.flatNo || r.towerNo || r.deviceLocation || '';
+            return `${type}___${num}___${ts}___${site}___${tech}___${loc}`;
           };
 
           // Existing local records
@@ -393,6 +397,35 @@ export default function App() {
     data: Omit<MeterInstallationRecord, 'id'> | Omit<InfraInstallationRecord, 'id'>
   ) => {
     setIsSubmitting(true);
+    // Strict Duplicate Serial Validation (Alpha, Numeric, Alphanumeric)
+    if (data.type === 'MeterInstallation' && (data as any).newMeterNo) {
+      const meterNo = (data as any).newMeterNo;
+      const isMeterDup =
+        history.some((r) => r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, meterNo)) ||
+        queue.some((r) => r.type === 'MeterInstallation' && areSerialsEqual((r as any).newMeterNo, meterNo)) ||
+        (settings.existingMeterNos || []).some((no) => areSerialsEqual(no, meterNo));
+
+      if (isMeterDup) {
+        setIsSubmitting(false);
+        triggerHaptic([50, 100, 50]);
+        showToast(`Duplicate: Meter #${meterNo} already registered! Cannot re-submit.`, 'warning');
+        return;
+      }
+    } else if (data.type === 'InfraInstallation' && (data as any).deviceNo) {
+      const devNo = (data as any).deviceNo;
+      const isDeviceDup =
+        history.some((r) => r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, devNo)) ||
+        queue.some((r) => r.type === 'InfraInstallation' && areSerialsEqual((r as any).deviceNo, devNo)) ||
+        (settings.existingDeviceNos || []).some((no) => areSerialsEqual(no, devNo));
+
+      if (isDeviceDup) {
+        setIsSubmitting(false);
+        triggerHaptic([50, 100, 50]);
+        showToast(`Duplicate: Device #${devNo} already registered! Cannot re-submit.`, 'warning');
+        return;
+      }
+    }
+
     const finalTech = currentUser || data.technicianName;
     const newRecord: WorkRecord = {
       ...data,

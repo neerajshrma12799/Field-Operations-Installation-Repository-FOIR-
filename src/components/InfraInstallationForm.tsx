@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { CloudUpload, Save, Loader2, RadioTower, AlertCircle, Sparkles, Lock } from 'lucide-react';
 import { InfraInstallationRecord, VerticalType } from '../types';
 import { PhotoUploader } from './PhotoUploader';
-import { getIndianTimestamp } from '../utils/timestamp';
+import { getIndianTimestamp, areSerialsEqual } from '../utils/timestamp';
 import { triggerHaptic } from '../utils/storage';
 
 interface InfraInstallationFormProps {
@@ -56,17 +56,15 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
     }
   }, [defaultTechnician]);
 
-  // Check if deviceNo / serial already exists in local history/queue OR directly in Google Sheet
-  const trimmedDeviceNo = formData.deviceNo.trim().toUpperCase();
-  const existingDeviceDuplicate = trimmedDeviceNo
-    ? existingRecords.find(
-        (r) => r.deviceNo && r.deviceNo.trim().toUpperCase() === trimmedDeviceNo
-      )
+  // Robust check for device serial / number duplicates (alphanumeric, numeric, or alphabetic)
+  const rawDeviceNo = formData.deviceNo;
+  const existingDeviceDuplicate = rawDeviceNo && String(rawDeviceNo).trim()
+    ? existingRecords.find((r) => areSerialsEqual(r.deviceNo, rawDeviceNo))
     : undefined;
 
   const existsInGoogleSheet =
-    trimmedDeviceNo && !existingDeviceDuplicate
-      ? sheetExistingDeviceNos.some((no) => no.trim().toUpperCase() === trimmedDeviceNo)
+    rawDeviceNo && String(rawDeviceNo).trim() && !existingDeviceDuplicate
+      ? sheetExistingDeviceNos.some((no) => areSerialsEqual(no, rawDeviceNo))
       : false;
 
   const isDuplicateDevice = Boolean(existingDeviceDuplicate || existsInGoogleSheet);
@@ -81,9 +79,9 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
     if (!formData.deviceNo.trim()) {
       newErrors.deviceNo = 'Device number is required';
     } else if (existingDeviceDuplicate) {
-      newErrors.deviceNo = `Duplicate Entry: This device number already exists! (Entered by ${existingDeviceDuplicate.technicianName} on ${existingDeviceDuplicate.siteName || 'site'})`;
+      newErrors.deviceNo = `Duplicate Entry: Device #${formData.deviceNo} already exists! (Entered by ${existingDeviceDuplicate.technicianName || 'tech'} on ${existingDeviceDuplicate.siteName || 'site'})`;
     } else if (existsInGoogleSheet) {
-      newErrors.deviceNo = 'Duplicate Entry: This device number already exists in Google Sheet!';
+      newErrors.deviceNo = `Duplicate Entry: Device #${formData.deviceNo} already exists in Google Sheet!`;
     }
 
     if (!formData.devicePhoto) newErrors.devicePhoto = 'Device photo is required';

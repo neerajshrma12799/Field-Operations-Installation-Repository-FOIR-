@@ -480,6 +480,12 @@ function doGet(e) {
         var d2 = ym[3].length === 1 ? "0" + ym[3] : ym[3];
         return ym[1] + "-" + m2 + "-" + d2;
       }
+      try {
+        var parsed = new Date(s);
+        if (!isNaN(parsed.getTime())) {
+          return Utilities.formatDate(parsed, "Asia/Kolkata", "yyyy-MM-dd");
+        }
+      } catch (e) {}
       return "";
     }
 

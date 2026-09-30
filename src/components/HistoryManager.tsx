@@ -30,6 +30,7 @@ import {
   parseInfraQty,
   getTodayYMD,
   getYesterdayYMD,
+  areSerialsEqual,
 } from '../utils/timestamp';
 
 interface HistoryManagerProps {
@@ -211,6 +212,18 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
     if (!editingItem || !onUpdateItem) return;
 
     if (editingItem.type === 'MeterInstallation') {
+      const targetMeterNo = editFormData.newMeterNo || (editingItem as MeterInstallationRecord).newMeterNo;
+      if (targetMeterNo) {
+        const isMeterDup = history.some(
+          (r) => r.id !== editingItem.id && r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, targetMeterNo)
+        );
+        if (isMeterDup) {
+          triggerHaptic([50, 100, 50]);
+          alert(`Duplicate: Meter #${targetMeterNo} already exists on another record!`);
+          return;
+        }
+      }
+
       const updated: MeterInstallationRecord = {
         ...(editingItem as MeterInstallationRecord),
         siteName: editFormData.siteName || editingItem.siteName,
@@ -226,6 +239,18 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
       (updated as any).originalNewMeterNo = (editingItem as MeterInstallationRecord).newMeterNo;
       onUpdateItem(updated);
     } else {
+      const targetDevNo = editFormData.deviceNo || (editingItem as InfraInstallationRecord).deviceNo;
+      if (targetDevNo) {
+        const isDevDup = history.some(
+          (r) => r.id !== editingItem.id && r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, targetDevNo)
+        );
+        if (isDevDup) {
+          triggerHaptic([50, 100, 50]);
+          alert(`Duplicate: Device #${targetDevNo} already exists on another record!`);
+          return;
+        }
+      }
+
       const updated: InfraInstallationRecord = {
         ...(editingItem as InfraInstallationRecord),
         siteName: editFormData.siteName || editingItem.siteName,
