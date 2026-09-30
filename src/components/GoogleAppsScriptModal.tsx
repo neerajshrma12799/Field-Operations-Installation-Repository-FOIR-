@@ -457,25 +457,128 @@ function doGet(e) {
     companies = companies.filter(function(v, idx, self) { return self.indexOf(v) === idx; });
     verticals = verticals.filter(function(v, idx, self) { return self.indexOf(v) === idx; });
 
-    // Fetch existing New Meter Numbers from "Meter" sheet (Column J, index 9)
+    // Helper to get today's date formatted as YYYY-MM-DD in IST
+    var todayIstStr = Utilities.formatDate(new Date(), "Asia/Kolkata", "yyyy-MM-dd");
+
+    function extractDatePart(dateVal) {
+      if (!dateVal) return "";
+      if (Object.prototype.toString.call(dateVal) === '[object Date]') {
+        return Utilities.formatDate(dateVal, "Asia/Kolkata", "yyyy-MM-dd");
+      }
+      var s = String(dateVal).trim();
+      var dm = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+      if (dm) {
+        var d = dm[1].length === 1 ? "0" + dm[1] : dm[1];
+        var m = dm[2].length === 1 ? "0" + dm[2] : dm[2];
+        return dm[3] + "-" + m + "-" + d;
+      }
+      var ym = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+      if (ym) {
+        var m2 = ym[2].length === 1 ? "0" + ym[2] : ym[2];
+        var d2 = ym[3].length === 1 ? "0" + ym[3] : ym[3];
+        return ym[1] + "-" + m2 + "-" + d2;
+      }
+      return "";
+    }
+
+    // 1. Total Meter Install & Today Meter Install from "Meter" sheet
+    var totalMeterInstall = 0;
+    var todayMeterInstall = 0;
     var existingMeterNos = [];
+    var sheetRecords = [];
     var meterSheet = ss.getSheetByName("Meter") || ss.getSheetByName("Sheet1");
     if (meterSheet && meterSheet.getLastRow() > 1) {
-      var meterValues = meterSheet.getRange(2, 10, meterSheet.getLastRow() - 1, 1).getValues();
-      for (var m = 0; m < meterValues.length; m++) {
-        var mVal = meterValues[m][0] ? String(meterValues[m][0]).trim().toUpperCase() : "";
-        if (mVal !== "") existingMeterNos.push(mVal);
+      // Columns: A=Timestamp(0), B=Tech(1), C=Company(2), D=Vertical(3), E=Site(4), F=Flat(5), G=OldMeter(6), H=OldMake(7), I=OldPhoto(8), J=NewMeter(9), K=NewMake(10), L=NewPhoto(11), M=Remark(12), N=ID(13)
+      var maxMeterCols = Math.max(meterSheet.getLastColumn(), 14);
+      var meterRange = meterSheet.getRange(2, 1, meterSheet.getLastRow() - 1, maxMeterCols).getValues();
+      for (var m = 0; m < meterRange.length; m++) {
+        var mRow = meterRange[m];
+        var timeStampVal = mRow[0];
+        var siteNameVal = mRow[4] ? String(mRow[4]).trim() : "";
+        var newMeterVal = mRow[9] ? String(mRow[9]).trim().toUpperCase() : "";
+
+        // Count as valid meter install if New Meter No or Site Name is present
+        if (newMeterVal !== "" || siteNameVal !== "") {
+          totalMeterInstall += 1;
+          if (newMeterVal !== "") existingMeterNos.push(newMeterVal);
+
+          // Check if installed Today
+          var recDate = extractDatePart(timeStampVal);
+          if (recDate === todayIstStr) {
+            todayMeterInstall += 1;
+          }
+
+          sheetRecords.push({
+            id: mRow[13] ? String(mRow[13]).trim() : ("meter_" + m + "_" + newMeterVal),
+            type: "MeterInstallation",
+            installationDate: timeStampVal ? String(timeStampVal) : "",
+            timestamp: timeStampVal ? String(timeStampVal) : "",
+            technicianName: mRow[1] ? String(mRow[1]).trim() : "",
+            company: mRow[2] ? String(mRow[2]).trim() : "",
+            vertical: mRow[3] ? String(mRow[3]).trim() : "",
+            siteName: siteNameVal,
+            flatNo: mRow[5] ? String(mRow[5]).trim() : "",
+            oldMeterNo: mRow[6] ? String(mRow[6]).trim() : "",
+            oldMeterMake: mRow[7] ? String(mRow[7]).trim() : "",
+            oldMeterPhoto: mRow[8] ? String(mRow[8]).trim() : null,
+            newMeterNo: newMeterVal,
+            newMeterMake: mRow[10] ? String(mRow[10]).trim() : "",
+            newMeterPhoto: mRow[11] ? String(mRow[11]).trim() : null,
+            remark: mRow[12] ? String(mRow[12]).trim() : "",
+            status: "synced"
+          });
+        }
       }
     }
 
-    // Fetch existing Device Numbers from "Infra" sheet (Column G, index 6 / 7th column)
+    // 2. Total Infra Install & Today Infra Install from "Infra" sheet (SUM Column H / infraQty)
+    var totalInfraInstall = 0;
+    var todayInfraInstall = 0;
     var existingDeviceNos = [];
     var infraSheet = ss.getSheetByName("Infra") || ss.getSheetByName("InfraInstallation");
     if (infraSheet && infraSheet.getLastRow() > 1) {
-      var infraValues = infraSheet.getRange(2, 7, infraSheet.getLastRow() - 1, 1).getValues();
-      for (var d = 0; d < infraValues.length; d++) {
-        var dVal = infraValues[d][0] ? String(infraValues[d][0]).trim().toUpperCase() : "";
-        if (dVal !== "") existingDeviceNos.push(dVal);
+      // Columns: A=Timestamp(0), B=Tech(1), C=Company(2), D=Vertical(3), E=Site(4), F=DeviceLoc(5), G=DeviceNo(6), H=InfraQty(7), I=Photo(8), J=Remark(9), K=ID(10)
+      var maxInfraCols = Math.max(infraSheet.getLastColumn(), 11);
+      var infraRange = infraSheet.getRange(2, 1, infraSheet.getLastRow() - 1, maxInfraCols).getValues();
+      for (var d = 0; d < infraRange.length; d++) {
+        var iRow = infraRange[d];
+        var iTimeStamp = iRow[0];
+        var devNo = iRow[6] ? String(iRow[6]).trim().toUpperCase() : "";
+        var siteVal = iRow[4] ? String(iRow[4]).trim() : "";
+        var qtyRaw = iRow[7]; // Column H = Infra Qty
+        var qtyNum = 1;
+        if (qtyRaw !== undefined && qtyRaw !== null && qtyRaw !== "") {
+          var parsedQty = parseFloat(String(qtyRaw).replace(/[^0-9.-]/g, ""));
+          qtyNum = isNaN(parsedQty) || parsedQty <= 0 ? 1 : parsedQty;
+        }
+
+        if (devNo !== "" || siteVal !== "") {
+          if (devNo !== "") existingDeviceNos.push(devNo);
+          totalInfraInstall += qtyNum;
+
+          var iDate = extractDatePart(iTimeStamp);
+          if (iDate === todayIstStr) {
+            todayInfraInstall += qtyNum;
+          }
+
+          sheetRecords.push({
+            id: iRow[10] ? String(iRow[10]).trim() : ("infra_" + d + "_" + devNo),
+            type: "InfraInstallation",
+            installationDate: iTimeStamp ? String(iTimeStamp) : "",
+            timestamp: iTimeStamp ? String(iTimeStamp) : "",
+            technicianName: iRow[1] ? String(iRow[1]).trim() : "",
+            company: iRow[2] ? String(iRow[2]).trim() : "",
+            vertical: iRow[3] ? String(iRow[3]).trim() : "",
+            siteName: siteVal,
+            towerNo: iRow[5] ? String(iRow[5]).trim() : "",
+            deviceLocation: iRow[5] ? String(iRow[5]).trim() : "",
+            deviceNo: devNo,
+            infraQty: String(qtyNum),
+            devicePhoto: iRow[8] ? String(iRow[8]).trim() : null,
+            remark: iRow[9] ? String(iRow[9]).trim() : "",
+            status: "synced"
+          });
+        }
       }
     }
 
@@ -489,7 +592,14 @@ function doGet(e) {
       companies: companies,
       verticals: verticals,
       existingMeterNos: existingMeterNos,
-      existingDeviceNos: existingDeviceNos
+      existingDeviceNos: existingDeviceNos,
+      sheetRecords: sheetRecords,
+      sheetStats: {
+        totalMeterInstall: totalMeterInstall,
+        todayMeterInstall: todayMeterInstall,
+        totalInfraInstall: totalInfraInstall,
+        todayInfraInstall: todayInfraInstall
+      }
     })).setMimeType(ContentService.MimeType.JSON);
   }
 

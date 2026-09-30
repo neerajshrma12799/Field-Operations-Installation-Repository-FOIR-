@@ -41,7 +41,16 @@ import {
 } from 'lucide-react';
 import { AppSettings, WorkRecord } from '../types';
 import { triggerHaptic, playFeedbackSound, exportRecordsToCSV } from '../utils/storage';
-import { isDateInRange } from '../utils/timestamp';
+import {
+  isDateInRange,
+  isRecordToday,
+  isRecordYesterday,
+  isMeterRecord,
+  isInfraRecord,
+  parseInfraQty,
+  getTodayYMD,
+  getYesterdayYMD,
+} from '../utils/timestamp';
 
 interface AdminPortalProps {
   isOpen: boolean;
@@ -178,13 +187,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return Array.from(verts).sort();
   }, [verticalList, history]);
 
-  // Helper to parse numeric infra quantity safely
-  const parseInfraQty = (val: any): number => {
-    if (val === undefined || val === null || val === '') return 1;
-    const n = parseFloat(String(val));
-    return isNaN(n) ? 1 : n;
-  };
-
   // Filtered History for Dashboard
   const filteredRecords = useMemo(() => {
     return history.filter((item) => {
@@ -205,8 +207,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         return false;
       }
       // 5. Work type filter
-      if (filterType === 'meter' && item.type !== 'MeterInstallation') return false;
-      if (filterType === 'infra' && item.type !== 'InfraInstallation') return false;
+      if (filterType === 'meter' && !isMeterRecord(item)) return false;
+      if (filterType === 'infra' && !isInfraRecord(item)) return false;
 
       // 6. Date Range filter
       const dateToCheck = item.installationDate || item.timestamp;
@@ -222,8 +224,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           item.technicianName?.toLowerCase().includes(q) ||
           (item.company && item.company.toLowerCase().includes(q)) ||
           (item.vertical && item.vertical.toLowerCase().includes(q)) ||
-          (item.type === 'MeterInstallation' && (item.newMeterNo?.toLowerCase().includes(q) || item.flatNo?.toLowerCase().includes(q))) ||
-          (item.type === 'InfraInstallation' && (item.deviceNo?.toLowerCase().includes(q) || item.towerNo?.toLowerCase().includes(q)));
+          (isMeterRecord(item) && (item.newMeterNo?.toLowerCase().includes(q) || item.flatNo?.toLowerCase().includes(q))) ||
+          (isInfraRecord(item) && (item.deviceNo?.toLowerCase().includes(q) || item.towerNo?.toLowerCase().includes(q)));
         if (!matches) return false;
       }
 
@@ -232,31 +234,43 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   }, [history, filterTeam, filterVertical, filterCompany, filterSite, filterType, startDate, endDate, searchQuery]);
 
   // Exact KPIs Requested by User:
-  // 1. Total Meter Installation
-  // 2. Total Infra Installation: sum (infra Qty)
-  // 3. Today Meter Installation (Vs Last day Installation % and Number)
-  // 4. Today Infra Installation (Vs Last day Installation % and Number)
+  // 1. Total Meter Installation: count of meter records (new meter or site name)
+  // 2. Total Infra Installation: sum (infra Qty Col H)
+  // 3. Today Meter Installation: date extracted from timestamp, count today's meters
+  // Exact KPIs Requested by User:
+  // 1. Total Meter Installation: count of meter records (new meter or site name)
+  // 2. Total Infra Installation: sum (infra Qty Col H) - mirrors Google Sheet live sum
+  // 3. Today Meter Installation: date extracted from timestamp, count today's meters
+  // 4. Today Infra Installation: date extracted from timestamp, sum of infra Qty (Col H)
   const kpis = useMemo(() => {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const toYMD = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
-    const now = new Date();
-    const todayYMD = toYMD(now);
-
-    const yesterday = new Date(now);
-    yesterday.setDate(now.getDate() - 1);
-    const yesterdayYMD = toYMD(yesterday);
+    const isAllFiltersDefault =
+      filterTeam === 'all' &&
+      filterVertical === 'all' &&
+      filterCompany === 'all' &&
+      filterSite === 'all' &&
+      filterType === 'all' &&
+      !startDate &&
+      !endDate &&
+      !searchQuery.trim();
 
     // 1. Total Meter Installation count
-    const totalMeter = filteredRecords.filter((r) => r.type === 'MeterInstallation').length;
+    const localMeter = filteredRecords.filter((r) => isMeterRecord(r)).length;
+    const totalMeter = isAllFiltersDefault && settings.sheetStats?.totalMeterInstall !== undefined
+      ? Math.max(localMeter, settings.sheetStats.totalMeterInstall)
+      : localMeter;
 
-    // 2. Total Infra Installation: sum (infra Qty)
-    const totalInfraQty = filteredRecords.reduce((sum, r) => {
-      if (r.type === 'InfraInstallation') {
+    // 2. Total Infra Installation: sum (infra Qty Col H)
+    const localInfraQty = filteredRecords.reduce((sum, r) => {
+      if (isInfraRecord(r)) {
         return sum + parseInfraQty(r.infraQty);
       }
       return sum;
     }, 0);
+
+    // If unfiltered, use live Google Sheet total (e.g. 6) if it's higher than local device cache
+    const totalInfraQty = isAllFiltersDefault && settings.sheetStats?.totalInfraInstall !== undefined
+      ? Math.max(localInfraQty, settings.sheetStats.totalInfraInstall)
+      : localInfraQty;
 
     // Filter scope for today & yesterday based on selected team/vertical/company/site
     const matchBaseFilters = (r: WorkRecord) => {
@@ -267,47 +281,47 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       return true;
     };
 
-    // Today Meter count (Units)
-    const todayMeterCount = history.filter((r) => {
-      if (!matchBaseFilters(r) || r.type !== 'MeterInstallation') return false;
-      return isDateInRange(r.installationDate || r.timestamp, todayYMD, todayYMD);
+    // 3. Today Meter count (Units)
+    const localTodayMeter = history.filter((r) => {
+      return matchBaseFilters(r) && isMeterRecord(r) && isRecordToday(r);
     }).length;
+
+    const todayMeterCount = isAllFiltersDefault && settings.sheetStats?.todayMeterInstall !== undefined
+      ? Math.max(localTodayMeter, settings.sheetStats.todayMeterInstall)
+      : localTodayMeter;
 
     // Yesterday Meter count (Units)
     const yesterdayMeterCount = history.filter((r) => {
-      if (!matchBaseFilters(r) || r.type !== 'MeterInstallation') return false;
-      return isDateInRange(r.installationDate || r.timestamp, yesterdayYMD, yesterdayYMD);
+      return matchBaseFilters(r) && isMeterRecord(r) && isRecordYesterday(r);
     }).length;
 
-    // Today Infra Qty (sum)
-    const todayInfraQty = history.reduce((sum, r) => {
-      if (!matchBaseFilters(r) || r.type !== 'InfraInstallation') return sum;
-      if (isDateInRange(r.installationDate || r.timestamp, todayYMD, todayYMD)) {
-        return sum + parseInfraQty(r.infraQty);
-      }
-      return sum;
-    }, 0);
-
-    // Yesterday Infra Qty (sum)
-    const yesterdayInfraQty = history.reduce((sum, r) => {
-      if (!matchBaseFilters(r) || r.type !== 'InfraInstallation') return sum;
-      if (isDateInRange(r.installationDate || r.timestamp, yesterdayYMD, yesterdayYMD)) {
-        return sum + parseInfraQty(r.infraQty);
-      }
-      return sum;
-    }, 0);
-
-    // Combined Today Meter + Infra Qty (Requested: Today Meter Installation isme bhe sum kare Infra Qty ko)
-    const todayMeterWithInfraTotal = todayMeterCount + todayInfraQty;
-    const yesterdayMeterWithInfraTotal = yesterdayMeterCount + yesterdayInfraQty;
-
-    const meterDiffNumber = todayMeterWithInfraTotal - yesterdayMeterWithInfraTotal;
+    const meterDiffNumber = todayMeterCount - yesterdayMeterCount;
     let meterDiffPercent = 0;
-    if (yesterdayMeterWithInfraTotal > 0) {
-      meterDiffPercent = Math.round(((todayMeterWithInfraTotal - yesterdayMeterWithInfraTotal) / yesterdayMeterWithInfraTotal) * 100);
-    } else if (todayMeterWithInfraTotal > 0) {
+    if (yesterdayMeterCount > 0) {
+      meterDiffPercent = Math.round(((todayMeterCount - yesterdayMeterCount) / yesterdayMeterCount) * 100);
+    } else if (todayMeterCount > 0) {
       meterDiffPercent = 100;
     }
+
+    // 4. Today Infra Qty (sum of Col H)
+    const localTodayInfra = history.reduce((sum, r) => {
+      if (matchBaseFilters(r) && isInfraRecord(r) && isRecordToday(r)) {
+        return sum + parseInfraQty(r.infraQty);
+      }
+      return sum;
+    }, 0);
+
+    const todayInfraQty = isAllFiltersDefault && settings.sheetStats?.todayInfraInstall !== undefined
+      ? Math.max(localTodayInfra, settings.sheetStats.todayInfraInstall)
+      : localTodayInfra;
+
+    // Yesterday Infra Qty (sum of Col H)
+    const yesterdayInfraQty = history.reduce((sum, r) => {
+      if (matchBaseFilters(r) && isInfraRecord(r) && isRecordYesterday(r)) {
+        return sum + parseInfraQty(r.infraQty);
+      }
+      return sum;
+    }, 0);
 
     const infraDiffNumber = todayInfraQty - yesterdayInfraQty;
     let infraDiffPercent = 0;
@@ -317,21 +331,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       infraDiffPercent = 100;
     }
 
+    // Combined Today & Total Work
+    const combinedTodayWork = todayMeterCount + todayInfraQty;
+    const combinedTotalWork = totalMeter + totalInfraQty;
+
     return {
       totalMeter,
       totalInfraQty,
       todayMeterCount,
       yesterdayMeterCount,
-      todayMeterWithInfraTotal,
-      yesterdayMeterWithInfraTotal,
       meterDiffNumber,
       meterDiffPercent,
       todayInfraQty,
       yesterdayInfraQty,
       infraDiffNumber,
       infraDiffPercent,
+      combinedTodayWork,
+      combinedTotalWork,
+      localInfraQty,
     };
-  }, [filteredRecords, history, filterTeam, filterVertical, filterCompany, filterSite]);
+  }, [filteredRecords, history, filterTeam, filterVertical, filterCompany, filterSite, settings.sheetStats, startDate, endDate, searchQuery, filterType]);
 
   // Team Wise Cluster Graph Data:
   // For each technician: (meter installation count) & (sum Qty infra)
@@ -344,9 +363,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         techStatsMap[tech] = { meterCount: 0, infraQty: 0 };
       }
 
-      if (r.type === 'MeterInstallation') {
+      if (isMeterRecord(r)) {
         techStatsMap[tech].meterCount += 1;
-      } else if (r.type === 'InfraInstallation') {
+      } else if (isInfraRecord(r)) {
         techStatsMap[tech].infraQty += parseInfraQty(r.infraQty);
       }
     });
@@ -393,19 +412,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     let todayInfra = 0;
     let allMeters = 0;
     let allInfra = 0;
-    const today = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const todayYMD = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
 
     filteredRecords.forEach((r) => {
-      const isRecordToday = isDateInRange(r.installationDate || r.timestamp, todayYMD, todayYMD);
-      if (r.type === 'MeterInstallation') {
+      const isToday = isRecordToday(r);
+      if (isMeterRecord(r)) {
         allMeters += 1;
-        if (isRecordToday) todayMeters += 1;
-      } else if (r.type === 'InfraInstallation') {
+        if (isToday) todayMeters += 1;
+      } else if (isInfraRecord(r)) {
         const q = parseInfraQty(r.infraQty);
         allInfra += q;
-        if (isRecordToday) todayInfra += q;
+        if (isToday) todayInfra += q;
       }
     });
 
@@ -414,9 +430,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   const aggregatedTableData = useMemo(() => {
     const map = new Map<string, AggregatedRow>();
-    const today = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const todayYMD = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
 
     filteredRecords.forEach((r) => {
       const tech = r.technicianName?.trim() || '-';
@@ -444,21 +457,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       }
 
       const row = map.get(rowKey)!;
-      const dateToCheck = r.installationDate || r.timestamp;
-      const isRecordToday = isDateInRange(dateToCheck, todayYMD, todayYMD);
+      const isToday = isRecordToday(r);
 
-      if (r.type === 'MeterInstallation') {
+      if (isMeterRecord(r)) {
         row.meterCount += 1;
-        if (isRecordToday) {
+        if (isToday) {
           row.todayMeterCount += 1;
         }
         if (r.newMeterPhoto && row.samplePhotos.length < 3) {
           row.samplePhotos.push({ url: r.newMeterPhoto, title: `Meter: ${r.newMeterNo || ''}` });
         }
-      } else if (r.type === 'InfraInstallation') {
+      } else if (isInfraRecord(r)) {
         const qty = parseInfraQty(r.infraQty);
         row.infraQty += qty;
-        if (isRecordToday) {
+        if (isToday) {
           row.todayInfraQty += qty;
         }
         if (r.devicePhoto && row.samplePhotos.length < 3) {
@@ -1130,12 +1142,28 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
                 </div>
 
-                {/* KPI 2: Total Infra Installation (sum infra Qty) */}
+                {/* KPI 2: Total Infra Installation (sum infra Qty Col H) */}
                 <div className="bg-white px-3.5 py-2.5 rounded-xl border border-emerald-100 shadow-xs flex items-center justify-between">
                   <div>
-                    <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider block">
-                      Total Infra Install
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider block">
+                        Total Infra Install
+                      </span>
+                      {onRefreshData && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            triggerHaptic(20);
+                            onRefreshData();
+                          }}
+                          className="text-[9px] font-bold text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 px-1 py-0.2 rounded flex items-center gap-0.5 cursor-pointer"
+                          title="Refresh live from Google Sheet"
+                        >
+                          <RefreshCw className={`w-2.5 h-2.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                          <span>sync</span>
+                        </button>
+                      )}
+                    </div>
                     <div className="flex items-baseline gap-1 mt-0.5">
                       <span className="text-xl font-black text-slate-900 leading-none">
                         {kpis.totalInfraQty}
@@ -1143,6 +1171,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded">
                         sum (Qty)
                       </span>
+                      {settings.sheetStats?.totalInfraInstall !== undefined && (
+                        <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1.5 py-0.2 rounded">
+                          Sheet: {settings.sheetStats.totalInfraInstall}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg shrink-0">
@@ -1150,15 +1183,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
                 </div>
 
-                {/* KPI 3: Today Meter Installation (Summed with Infra Qty as requested) */}
+                {/* KPI 3: Today Meter Installation (Count of Today's Meters) */}
                 <div className="bg-white px-3.5 py-2.5 rounded-xl border border-amber-100 shadow-xs flex items-center justify-between">
                   <div className="min-w-0">
                     <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider block truncate">
-                      Today Meter (w/ Infra)
+                      Today Meter Install
                     </span>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-xl font-black text-slate-900 leading-none">
-                        {kpis.todayMeterWithInfraTotal}
+                        {kpis.todayMeterCount}
                       </span>
                       <span
                         className={`text-[9px] font-black px-1.5 py-0.2 rounded border flex items-center gap-0.5 ${
@@ -1171,7 +1204,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </span>
                     </div>
                     <span className="text-[9px] text-slate-400 block truncate">
-                      M:{kpis.todayMeterCount} + I:{kpis.todayInfraQty}
+                      Vs Yday: {kpis.yesterdayMeterCount} ({kpis.meterDiffPercent >= 0 ? `+${kpis.meterDiffPercent}%` : `${kpis.meterDiffPercent}%`})
                     </span>
                   </div>
                   <div className="p-2 bg-amber-50 text-amber-600 rounded-lg shrink-0">
@@ -1179,11 +1212,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
                 </div>
 
-                {/* KPI 4: Infra Meter Installation (Vs Last Day % and Number) */}
+                {/* KPI 4: Today Infra Installation (Sum of Col H Infra Qty) */}
                 <div className="bg-white px-3.5 py-2.5 rounded-xl border border-sky-100 shadow-xs flex items-center justify-between">
                   <div className="min-w-0">
                     <span className="text-[10px] font-bold text-sky-700 uppercase tracking-wider block truncate">
-                      Today Infra Only
+                      Today Infra Install
                     </span>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-xl font-black text-slate-900 leading-none">
@@ -1200,11 +1233,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </span>
                     </div>
                     <span className="text-[9px] text-slate-400 block truncate">
-                      Vs Yday: {kpis.yesterdayInfraQty}
+                      Vs Yday: {kpis.yesterdayInfraQty} (sum Qty)
                     </span>
                   </div>
                   <div className="p-2 bg-sky-50 text-sky-600 rounded-lg shrink-0">
                     <TrendingUp className="w-4 h-4" />
+                  </div>
+                </div>
+
+                {/* Combined Work Output Banner */}
+                <div className="col-span-2 lg:col-span-4 bg-gradient-to-r from-indigo-50/80 via-white to-emerald-50/80 px-3.5 py-2 rounded-xl border border-slate-200/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className="font-semibold text-slate-700">Combined Work Summary:</span>
+                    <span className="font-bold text-indigo-700">Today: {kpis.combinedTodayWork}</span>
+                    <span className="text-slate-500 text-[11px]">(Meters: {kpis.todayMeterCount} + Infra: {kpis.todayInfraQty})</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-slate-600">
+                    <span>Total All-Time Work:</span>
+                    <strong className="text-slate-900 font-extrabold">{kpis.combinedTotalWork}</strong>
+                    <span className="text-slate-500 text-[11px]">(Meters: {kpis.totalMeter} + Infra: {kpis.totalInfraQty})</span>
                   </div>
                 </div>
 

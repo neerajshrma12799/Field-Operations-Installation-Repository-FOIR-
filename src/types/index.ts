@@ -47,6 +47,13 @@ export interface TechnicianAccount {
   password?: string;
 }
 
+export interface SheetStats {
+  totalMeterInstall: number;
+  todayMeterInstall: number;
+  totalInfraInstall: number;
+  todayInfraInstall: number;
+}
+
 export interface AppSettings {
   scriptUrl: string;
   technicians: string[];
@@ -57,6 +64,7 @@ export interface AppSettings {
   verticals: string[];
   existingMeterNos?: string[];
   existingDeviceNos?: string[];
+  sheetStats?: SheetStats;
   autoSync: true | boolean;
   hapticFeedback: boolean;
   soundEnabled: boolean;

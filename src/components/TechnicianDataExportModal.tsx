@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { WorkRecord } from '../types';
 import { exportRecordsToCSV, triggerHaptic, playFeedbackSound } from '../utils/storage';
-import { isDateInRange } from '../utils/timestamp';
+import { isDateInRange, isMeterRecord, isInfraRecord } from '../utils/timestamp';
 
 interface TechnicianDataExportModalProps {
   isOpen: boolean;
@@ -89,8 +89,8 @@ export const TechnicianDataExportModal: React.FC<TechnicianDataExportModalProps>
       }
 
       // 2. Type filter
-      if (workType === 'meter' && rec.type !== 'MeterInstallation') return false;
-      if (workType === 'infra' && rec.type !== 'InfraInstallation') return false;
+      if (workType === 'meter' && !isMeterRecord(rec)) return false;
+      if (workType === 'infra' && !isInfraRecord(rec)) return false;
 
       // 3. Date range filter
       const timestamp = rec.installationDate || rec.timestamp;

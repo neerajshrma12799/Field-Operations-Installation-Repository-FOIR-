@@ -135,6 +135,14 @@ export const deleteStoredHistoryItem = (id: string): void => {
   }
 };
 
+export const setStoredHistory = (records: WorkRecord[]): void => {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(records.slice(0, 500)));
+  } catch (e) {
+    console.error('Error saving history', e);
+  }
+};
+
 export const clearStoredHistory = (): void => {
   localStorage.removeItem(HISTORY_KEY);
 };

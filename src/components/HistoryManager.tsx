@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   History,
   CheckCircle2,
@@ -22,7 +22,13 @@ import {
 } from 'lucide-react';
 import { WorkRecord, MeterInstallationRecord, InfraInstallationRecord } from '../types';
 import { exportRecordsToCSV, triggerHaptic } from '../utils/storage';
-import { isDateInRange } from '../utils/timestamp';
+import {
+  isDateInRange,
+  isMeterRecord,
+  isInfraRecord,
+  isRecordToday,
+  parseInfraQty,
+} from '../utils/timestamp';
 
 interface HistoryManagerProps {
   history: WorkRecord[];
@@ -241,6 +247,35 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
 
   const isTodayActive = startDate === getTodayYMD() && endDate === getTodayYMD();
 
+  // Accurate Meter count & Infra sum (Col H)
+  const stats = useMemo(() => {
+    let meters = 0;
+    let infraQtySum = 0;
+    let todayMeters = 0;
+    let todayInfraQtySum = 0;
+
+    filteredHistory.forEach((r) => {
+      const isToday = isRecordToday(r);
+      if (isMeterRecord(r)) {
+        meters += 1;
+        if (isToday) todayMeters += 1;
+      } else if (isInfraRecord(r)) {
+        const q = parseInfraQty((r as any).infraQty);
+        infraQtySum += q;
+        if (isToday) todayInfraQtySum += q;
+      }
+    });
+
+    return {
+      meters,
+      infraQtySum,
+      todayMeters,
+      todayInfraQtySum,
+      totalCombined: meters + infraQtySum,
+      todayCombined: todayMeters + todayInfraQtySum,
+    };
+  }, [filteredHistory]);
+
   return (
     <div className="space-y-4">
       {/* Top Header Card */}
@@ -263,6 +298,24 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
                   {isTodayActive ? " • Today's Verified Work Log" : ' • Filtered Records'}
                 </p>
               </div>
+            </div>
+
+            {/* Quick Metrics Bar: Meter Count & Infra Qty Sum */}
+            <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">
+                Meters: <strong>{stats.meters}</strong>
+              </span>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">
+                Infra Qty: <strong>{stats.infraQtySum}</strong> (sum)
+              </span>
+              {stats.todayCombined > 0 && (
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200">
+                  Today: <strong>{stats.todayMeters}</strong> M + <strong>{stats.todayInfraQtySum}</strong> I
+                </span>
+              )}
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
+                Total Output: <strong>{stats.totalCombined}</strong>
+              </span>
             </div>
           </div>
 

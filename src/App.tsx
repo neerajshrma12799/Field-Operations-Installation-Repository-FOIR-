@@ -44,6 +44,7 @@ import {
   updateStoredHistoryItem,
   deleteStoredHistoryItem,
   clearStoredHistory,
+  setStoredHistory,
   getStoredSettings,
   saveStoredSettings,
   getLoggedInTechnician,
@@ -176,6 +177,14 @@ export default function App() {
           if (Array.isArray(data.existingDeviceNos)) {
             updated.existingDeviceNos = data.existingDeviceNos;
           }
+          if (data.sheetStats && typeof data.sheetStats === 'object') {
+            updated.sheetStats = {
+              totalMeterInstall: Number(data.sheetStats.totalMeterInstall) || 0,
+              todayMeterInstall: Number(data.sheetStats.todayMeterInstall) || 0,
+              totalInfraInstall: Number(data.sheetStats.totalInfraInstall) || 0,
+              todayInfraInstall: Number(data.sheetStats.todayInfraInstall) || 0,
+            };
+          }
 
           // Column B: Passwords
           const remotePasswords = data.technicianPasswords || data.passwords;
@@ -201,6 +210,25 @@ export default function App() {
           return updated;
         });
 
+        // Merge remote records from Google Sheets into local history
+        if (Array.isArray(data.sheetRecords) && data.sheetRecords.length > 0) {
+          const currentHist = getStoredHistory();
+          const histMap = new Map<string, WorkRecord>();
+          // Existing local records
+          currentHist.forEach((r) => {
+            const key = r.id || `${r.type}_${r.timestamp}_${(r as any).newMeterNo || (r as any).deviceNo || ''}`;
+            histMap.set(key, r);
+          });
+          // Merge remote records from Google Sheets
+          data.sheetRecords.forEach((remoteRec: WorkRecord) => {
+            const key = remoteRec.id || `${remoteRec.type}_${remoteRec.timestamp}_${(remoteRec as any).newMeterNo || (remoteRec as any).deviceNo || ''}`;
+            histMap.set(key, remoteRec);
+          });
+          const merged = Array.from(histMap.values());
+          setStoredHistory(merged);
+          setHistory(merged);
+        }
+
         if (isManual) {
           playFeedbackSound('success');
           triggerHaptic([30, 40]);
@@ -208,7 +236,8 @@ export default function App() {
           const compCount = hasCompanies ? remoteCompanies.length : 0;
           const vertCount = hasVerticals ? remoteVerticals.length : 0;
           const makeCount = hasMakes ? remoteMakes.length : 0;
-          showToast(`Synced! ${techCount} techs, ${compCount} companies, ${vertCount} verticals, ${makeCount} makes`, 'success');
+          const recCount = Array.isArray(data.sheetRecords) ? data.sheetRecords.length : 0;
+          showToast(`Synced! ${techCount} techs, ${compCount} companies, ${vertCount} verticals, ${makeCount} makes${recCount > 0 ? `, ${recCount} sheet records` : ''}`, 'success');
         }
       } else {
         if (isManual) {

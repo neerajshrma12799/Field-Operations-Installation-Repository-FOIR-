@@ -1,3 +1,5 @@
+import { MeterInstallationRecord, InfraInstallationRecord } from '../types';
+
 /**
  * Formats date and time strictly in Indian Standard Time (IST - Asia/Kolkata)
  * Standard Indian format: DD/MM/YYYY, hh:mm:ss AM/PM
@@ -52,12 +54,16 @@ export const getIndianTimestamp = (date: Date = new Date()): string => {
 /**
  * Parse standard timestamp (DD/MM/YYYY or YYYY-MM-DD or ISO) into Date object
  */
-export const parseRecordDate = (timestampStr?: string): Date | null => {
+export const parseRecordDate = (timestampStr?: any): Date | null => {
   if (!timestampStr) return null;
-  const str = timestampStr.trim();
+  if (timestampStr instanceof Date) {
+    return isNaN(timestampStr.getTime()) ? null : timestampStr;
+  }
+  const str = String(timestampStr).trim();
+  if (!str) return null;
   
-  // Try DD/MM/YYYY format (e.g. 28/09/2026, 12:45:30 PM)
-  const ddmmyyyyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  // Try DD/MM/YYYY or DD-MM-YYYY format (e.g. 28/09/2026, 12:45:30 PM or 28-09-2026)
+  const ddmmyyyyMatch = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
   if (ddmmyyyyMatch) {
     const day = parseInt(ddmmyyyyMatch[1], 10);
     const month = parseInt(ddmmyyyyMatch[2], 10) - 1;
@@ -86,29 +92,157 @@ export const parseRecordDate = (timestampStr?: string): Date | null => {
 };
 
 /**
+ * Extract clean YYYY-MM-DD string from any date-time stamp string or Date object
+ */
+export const extractDateYMD = (timestampStr?: any): string | null => {
+  if (!timestampStr) return null;
+  if (timestampStr instanceof Date) {
+    if (isNaN(timestampStr.getTime())) return null;
+    const y = timestampStr.getFullYear();
+    const m = String(timestampStr.getMonth() + 1).padStart(2, '0');
+    const d = String(timestampStr.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const str = String(timestampStr).trim();
+  if (!str) return null;
+
+  // 1. Check DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const ddmmyyyyMatch = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+  if (ddmmyyyyMatch) {
+    const day = ddmmyyyyMatch[1].padStart(2, '0');
+    const month = ddmmyyyyMatch[2].padStart(2, '0');
+    const year = ddmmyyyyMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  // 2. Check YYYY-MM-DD or YYYY/MM/DD
+  const yyyymmddMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (yyyymmddMatch) {
+    const year = yyyymmddMatch[1];
+    const month = yyyymmddMatch[2].padStart(2, '0');
+    const day = yyyymmddMatch[3].padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  // 3. Fallback to parseRecordDate
+  const parsed = parseRecordDate(str);
+  if (parsed && !isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  return null;
+};
+
+/**
+ * Get Today's YYYY-MM-DD strictly aligned with Indian Standard Time (IST)
+ */
+export const getTodayYMD = (): string => {
+  const now = new Date();
+  try {
+    const parts = new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now);
+    const day = parts.find((p) => p.type === 'day')?.value;
+    const month = parts.find((p) => p.type === 'month')?.value;
+    const year = parts.find((p) => p.type === 'year')?.value;
+    if (day && month && year) {
+      return `${year}-${month}-${day}`;
+    }
+  } catch {}
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
+
+/**
+ * Get Yesterday's YYYY-MM-DD strictly aligned with Indian Standard Time (IST)
+ */
+export const getYesterdayYMD = (): string => {
+  const now = new Date();
+  now.setDate(now.getDate() - 1);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
+
+/**
  * Check if a date string falls between startDateStr and endDateStr (YYYY-MM-DD)
  */
 export const isDateInRange = (
-  timestampStr: string | undefined,
+  timestampStr: any,
   startDateStr: string,
   endDateStr: string
 ): boolean => {
   if (!startDateStr && !endDateStr) return true;
-  const recordDate = parseRecordDate(timestampStr);
-  if (!recordDate) return true; // Keep if cannot parse
+  const recordYMD = extractDateYMD(timestampStr);
+  if (!recordYMD) return true; // Keep if cannot parse
 
-  if (startDateStr) {
-    const [sYear, sMonth, sDay] = startDateStr.split('-').map(Number);
-    const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
-    if (recordDate < start) return false;
-  }
-
-  if (endDateStr) {
-    const [eYear, eMonth, eDay] = endDateStr.split('-').map(Number);
-    const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
-    if (recordDate > end) return false;
-  }
+  if (startDateStr && recordYMD < startDateStr) return false;
+  if (endDateStr && recordYMD > endDateStr) return false;
 
   return true;
+};
+
+/**
+ * Check if a record was installed Today (extracts date from timestamp)
+ */
+export const isRecordToday = (timestampOrRecord: any): boolean => {
+  const dateStr = typeof timestampOrRecord === 'object' && timestampOrRecord !== null
+    ? (timestampOrRecord.installationDate || timestampOrRecord.timestamp)
+    : timestampOrRecord;
+  const recordYMD = extractDateYMD(dateStr);
+  return !!recordYMD && recordYMD === getTodayYMD();
+};
+
+/**
+ * Check if a record was installed Yesterday (extracts date from timestamp)
+ */
+export const isRecordYesterday = (timestampOrRecord: any): boolean => {
+  const dateStr = typeof timestampOrRecord === 'object' && timestampOrRecord !== null
+    ? (timestampOrRecord.installationDate || timestampOrRecord.timestamp)
+    : timestampOrRecord;
+  const recordYMD = extractDateYMD(dateStr);
+  return !!recordYMD && recordYMD === getYesterdayYMD();
+};
+
+/**
+ * Check if a record is a Meter Installation (Meter sheet: new meter count or site name)
+ */
+export const isMeterRecord = (r: any): r is MeterInstallationRecord => {
+  if (!r) return false;
+  if (r.type === 'MeterInstallation') return true;
+  if (r.type === 'InfraInstallation') return false;
+  if (r.newMeterNo && String(r.newMeterNo).trim()) return true;
+  if (r.oldMeterNo && String(r.oldMeterNo).trim()) return true;
+  if (r.flatNo && String(r.flatNo).trim()) return true;
+  if (r.siteName && !r.deviceNo && !r.infraQty && !r.towerNo) return true;
+  return false;
+};
+
+/**
+ * Check if a record is an Infra Installation (Infra sheet)
+ */
+export const isInfraRecord = (r: any): r is InfraInstallationRecord => {
+  if (!r) return false;
+  if (r.type === 'InfraInstallation') return true;
+  if (r.type === 'MeterInstallation') return false;
+  if (r.deviceNo && String(r.deviceNo).trim()) return true;
+  if (r.towerNo && String(r.towerNo).trim()) return true;
+  if (r.infraQty !== undefined && r.infraQty !== null && r.infraQty !== '') return true;
+  return false;
+};
+
+/**
+ * Safely parse numeric Infra Qty (Column H in Infra sheet)
+ * Sums the number, defaulting to 1 if empty or non-numeric
+ */
+export const parseInfraQty = (val: any): number => {
+  if (val === undefined || val === null || val === '') return 1;
+  const num = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
+  return isNaN(num) || num <= 0 ? 1 : num;
 };
 
