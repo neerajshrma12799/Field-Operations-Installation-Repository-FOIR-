@@ -3,9 +3,10 @@ import { AppSettings, WorkRecord } from '../types';
 export const DEFAULT_SCRIPT_URL =
   (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env.VITE_GOOGLE_SCRIPT_URL)
     ? String((import.meta as any).env.VITE_GOOGLE_SCRIPT_URL).trim()
-    : 'https://script.google.com/macros/s/AKfycbwtBZfxm9TB4qAdhdA5VCTzpYq9VoFhrPUNykcmStSyytmCU0PXSaoC7cBbXaw8pjvC/exec';
+    : 'https://script.google.com/macros/s/AKfycbxNezil-kHx7kZq8mOZHItEd5Jp2X63WiUdK023cQTrgSjEO2RVtacKHXbP3ZHY0lGI/exec';
 
 const PREVIOUS_SCRIPT_URLS = [
+  'https://script.google.com/macros/s/AKfycbwtBZfxm9TB4qAdhdA5VCTzpYq9VoFhrPUNykcmStSyytmCU0PXSaoC7cBbXaw8pjvC/exec',
   'https://script.google.com/macros/s/AKfycbxjHS9zW3s8uJHqgCKx4jXIHetqCUv3pApMgIlGPEDbMuYPbAWxBp_nYsLDSLeFxxd0/exec',
   'https://script.google.com/macros/s/AKfycbzP-lgydlMTyTYTuvpyymUfRfD0YWa8BSMHBOAgZ6B5bFXAQd1Xw7CVaAF_WmykE9TB/exec',
 ];

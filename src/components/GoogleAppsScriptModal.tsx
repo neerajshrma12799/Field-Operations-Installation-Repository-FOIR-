@@ -197,7 +197,7 @@ function handleUpdateRecord(ss, record) {
     if (matchRowIndex > 0) {
       var existingRowValues = meterSheet.getRange(matchRowIndex, 1, 1, 14).getValues()[0];
       var oldPhoto = record.oldMeterPhotoUrl || existingRowValues[8] || "";
-      var newPhoto = record.newMeterPhotoUrl || existingRowValues[11] || "";
+      var rowIdToWrite = (record.id && String(record.id).trim()) ? String(record.id).trim() : (existingRowValues[13] || ("MTR_" + matchRowIndex));
 
       meterSheet.getRange(matchRowIndex, 1, 1, 14).setValues([[
         record.installationDate || record.timestamp || existingRowValues[0],
@@ -213,7 +213,7 @@ function handleUpdateRecord(ss, record) {
         record.newMeterMake || record.meterMake || existingRowValues[10],
         newPhoto,
         record.remark !== undefined ? record.remark : existingRowValues[12],
-        record.id || existingRowValues[13] || ""
+        rowIdToWrite
       ]]);
 
       return {
@@ -255,6 +255,7 @@ function handleUpdateRecord(ss, record) {
     if (matchRowIndex > 0) {
       var existingRowValues = infraSheet.getRange(matchRowIndex, 1, 1, 11).getValues()[0];
       var devPhoto = record.devicePhotoUrl || existingRowValues[8] || "";
+      var rowIdToWrite = (record.id && String(record.id).trim()) ? String(record.id).trim() : (existingRowValues[10] || ("INF_" + matchRowIndex));
 
       infraSheet.getRange(matchRowIndex, 1, 1, 11).setValues([[
         record.installationDate || record.timestamp || existingRowValues[0],
@@ -267,7 +268,7 @@ function handleUpdateRecord(ss, record) {
         record.infraQty || existingRowValues[7],
         devPhoto,
         record.remark !== undefined ? record.remark : existingRowValues[9],
-        record.id || existingRowValues[10] || ""
+        rowIdToWrite
       ]]);
 
       return {
@@ -763,6 +764,13 @@ function doPost(e) {
       var timePrefix = Utilities.formatDate(now, "Asia/Kolkata", "yyyyMMdd_HHmmss");
       var defaultIstDate = Utilities.formatDate(now, "Asia/Kolkata", "dd/MM/yyyy, hh:mm:ss a");
       var recordDate = r.installationDate || r.timestamp || defaultIstDate;
+      if (typeof recordDate === 'string' && (recordDate.indexOf('GMT') !== -1 || recordDate.match(/^[A-Z][a-z]{2}\s[A-Z][a-z]{2}/))) {
+        try {
+          recordDate = Utilities.formatDate(new Date(recordDate), "Asia/Kolkata", "dd/MM/yyyy, hh:mm:ss a");
+        } catch(dErr) {
+          recordDate = defaultIstDate;
+        }
+      }
 
       if (r.type === "MeterInstallation") {
         var newMeterKey = r.newMeterNo ? String(r.newMeterNo).trim().toUpperCase() : "";
@@ -787,7 +795,9 @@ function doPost(e) {
           newPhotoUrl = savePhotoToDrive(r.newMeterPhoto, newName, "Meter_Infra_Photos");
         }
 
-        // 1. Installation Date, Tech, Company, Vertical, Site, Flat, OldMeter, OldMake, OldPhotoUrl, NewMeter, NewMake, NewPhotoUrl, Remark
+        var meterId = (r.id && String(r.id).trim()) ? String(r.id).trim() : ("MTR_" + timePrefix + "_" + Math.floor(Math.random() * 89999 + 10000));
+
+        // 1. Installation Date, Tech, Company, Vertical, Site, Flat, OldMeter, OldMake, OldPhotoUrl, NewMeter, NewMake, NewPhotoUrl, Remark, ID
         meterSheet.appendRow([
           recordDate,
           r.technicianName || "",
@@ -802,7 +812,7 @@ function doPost(e) {
           r.newMeterMake || r.meterMake || "",
           newPhotoUrl,
           r.remark || "",
-          r.id || ""
+          meterId
         ]);
         if (newMeterKey) sheetMeterMap[newMeterKey] = true;
       } else if (r.type === "InfraInstallation") {
@@ -821,8 +831,9 @@ function doPost(e) {
           devicePhotoUrl = savePhotoToDrive(r.devicePhoto, devName, "Meter_Infra_Photos");
         }
 
+        var devId = (r.id && String(r.id).trim()) ? String(r.id).trim() : ("INF_" + timePrefix + "_" + Math.floor(Math.random() * 89999 + 10000));
         var targetSheet = infraSheet || meterSheet;
-        // 2. Installation Date, Tech, Company, Vertical, Site, DeviceLocation, DeviceNo, Qty, DevicePhotoUrl, Remark
+        // 2. Installation Date, Tech, Company, Vertical, Site, DeviceLocation, DeviceNo, Qty, DevicePhotoUrl, Remark, ID
         targetSheet.appendRow([
           recordDate,
           r.technicianName || "",
@@ -834,7 +845,7 @@ function doPost(e) {
           r.infraQty || "",
           devicePhotoUrl,
           r.remark || "",
-          r.id || ""
+          devId
         ]);
         if (devKey) sheetDeviceMap[devKey] = true;
       }

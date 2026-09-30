@@ -28,6 +28,8 @@ import {
   isInfraRecord,
   isRecordToday,
   parseInfraQty,
+  getTodayYMD,
+  getYesterdayYMD,
 } from '../utils/timestamp';
 
 interface HistoryManagerProps {
@@ -78,16 +80,19 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
     if (preset === 'all') {
       setStartDate('');
       setEndDate('');
+      setShowDateRangeFilter(false);
     } else if (preset === 'today') {
       const formatted = toYMD(today);
       setStartDate(formatted);
       setEndDate(formatted);
+      setShowDateRangeFilter(false);
     } else if (preset === 'yesterday') {
       const y = new Date(today);
       y.setDate(today.getDate() - 1);
       const formatted = toYMD(y);
       setStartDate(formatted);
       setEndDate(formatted);
+      setShowDateRangeFilter(false);
     } else if (preset === 'this_week') {
       const weekStart = new Date(today);
       const day = weekStart.getDay() || 7;
@@ -102,9 +107,11 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
   };
 
   const filteredHistory = history.filter((item) => {
-    // 1. Strictly show ONLY the logged-in technician's records (No all technicians data)
+    // 1. Strictly show logged-in technician's records (match if present)
     if (currentUser) {
-      if (item.technicianName?.trim().toLowerCase() !== currentUser.trim().toLowerCase()) {
+      const itemTech = item.technicianName?.trim().toLowerCase();
+      const currentTech = currentUser.trim().toLowerCase();
+      if (itemTech && itemTech !== currentTech) {
         return false;
       }
     }
@@ -245,7 +252,10 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
     }
   };
 
-  const isTodayActive = startDate === getTodayYMD() && endDate === getTodayYMD();
+  const isTodayActive = !showDateRangeFilter && startDate === getTodayYMD() && endDate === getTodayYMD();
+  const isYesterdayActive = !showDateRangeFilter && startDate === getYesterdayYMD() && endDate === getYesterdayYMD();
+  const isAllDaysActive = !showDateRangeFilter && !startDate && !endDate;
+  const isCustomActive = showDateRangeFilter || (Boolean(startDate || endDate) && !isTodayActive && !isYesterdayActive);
 
   // Accurate Meter count & Infra sum (Col H)
   const stats = useMemo(() => {
@@ -413,7 +423,11 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
               <button
                 type="button"
                 onClick={() => setDatePreset('yesterday')}
-                className="px-2.5 py-1.5 rounded-xl font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition"
+                className={`px-2.5 py-1.5 rounded-xl font-medium transition border ${
+                  isYesterdayActive
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm font-bold'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
               >
                 Yesterday
               </button>
@@ -421,8 +435,8 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
                 type="button"
                 onClick={() => setDatePreset('all')}
                 className={`px-2.5 py-1.5 rounded-xl font-medium transition border ${
-                  !startDate && !endDate
-                    ? 'bg-indigo-50 text-indigo-700 border-indigo-200 font-bold'
+                  isAllDaysActive
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm font-bold'
                     : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                 }`}
               >
@@ -437,12 +451,12 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
                 setShowDateRangeFilter(!showDateRangeFilter);
               }}
               className={`px-2.5 py-1.5 rounded-xl font-semibold flex items-center gap-1.5 transition border ${
-                showDateRangeFilter
-                  ? 'bg-slate-200 text-slate-800 border-slate-300'
+                isCustomActive
+                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                   : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
               }`}
             >
-              <Calendar className="w-3.5 h-3.5 text-indigo-600" />
+              <Calendar className={`w-3.5 h-3.5 ${isCustomActive ? 'text-white' : 'text-indigo-600'}`} />
               <span>Custom Date</span>
             </button>
           </div>
@@ -504,8 +518,19 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
           <p className="text-xs text-slate-500 max-w-sm mx-auto">
             {isTodayActive
               ? "Aaj aapne jo installations verify kiye hain woh yahan show honge. Purana data dekhne ke liye 'All Days' ya 'Custom Date' select karein."
-              : "Search query ya selected date range ke sath koi record match nahi hua."}
+              : "Selected date range ya filter ke sath koi record match nahi hua."}
           </p>
+          {history.length > 0 && (
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setDatePreset('all')}
+                className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold rounded-xl border border-indigo-200 transition cursor-pointer shadow-xs inline-flex items-center gap-1.5"
+              >
+                <span>Show All Days ({history.length} Total Records)</span>
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-3.5">
