@@ -161,7 +161,19 @@ export default function App() {
     try {
       setIsRefreshingSheet(true);
       const res = await fetch(`${currentUrl}?action=getTechnicians`, { method: 'GET' });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        if (rawText.includes('<!DOCTYPE') || rawText.includes('<html')) {
+          if (isManual) {
+            showToast('Google Sign-in page received! Make sure "Who has access: Anyone" is selected in Apps Script Deploy.', 'warning');
+          }
+          return;
+        }
+        throw new Error('Invalid JSON received');
+      }
       if (data && data.status === 'success') {
         const remoteMakes = data.meterMakes || data.makes || data.newMeterMakes || data.columnC;
         const hasMakes = Array.isArray(remoteMakes) && remoteMakes.length > 0;
@@ -541,15 +553,15 @@ export default function App() {
             {/* Header in Login Mode */}
             <header className="bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-700 text-white pt-3.5 pb-2.5 px-3 sm:px-5 shadow-md w-full">
               <div className="flex items-center justify-between gap-1.5 sm:gap-2">
-                <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
-                  <div className="p-1.5 bg-white/15 rounded-xl backdrop-blur-xs flex items-center justify-center shrink-0">
-                    <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-8 h-8 rounded-xl overflow-hidden bg-slate-900 border border-white/30 shrink-0 shadow-sm flex items-center justify-center">
+                    <img src="/icon.svg" alt="RR Enterprises" className="w-full h-full object-cover" />
                   </div>
                   <div className="min-w-0">
                     <h1 className="text-sm sm:text-base font-extrabold tracking-tight leading-tight truncate">
-                      Meter &amp; Infra
+                      RR Enterprises
                     </h1>
-                    <p className="text-[10px] text-indigo-100/90 font-medium truncate">Field Work Tracker</p>
+                    <p className="text-[10px] text-indigo-100/90 font-medium truncate">Smart Meter &amp; Electrical</p>
                   </div>
                 </div>
 
@@ -626,15 +638,15 @@ export default function App() {
             <header className="bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-700 text-white pt-3 pb-2.5 px-3 sm:px-5 sticky top-0 z-30 shadow-md w-full">
               {/* Top Bar: Title & Connectivity Badge & Controls */}
               <div className="flex items-center justify-between gap-1.5 sm:gap-2 mb-2">
-                <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
-                  <div className="p-1.5 bg-white/15 rounded-xl backdrop-blur-xs flex items-center justify-center shrink-0">
-                    <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-8 h-8 rounded-xl overflow-hidden bg-slate-900 border border-white/30 shrink-0 shadow-sm flex items-center justify-center">
+                    <img src="/icon.svg" alt="RR Enterprises" className="w-full h-full object-cover" />
                   </div>
                   <div className="min-w-0">
                     <h1 className="text-sm sm:text-base font-extrabold tracking-tight leading-tight truncate">
-                      Meter &amp; Infra
+                      RR Enterprises
                     </h1>
-                    <p className="text-[10px] text-indigo-100/90 font-medium truncate">Field Work Tracker</p>
+                    <p className="text-[10px] text-indigo-100/90 font-medium truncate">Smart Meter &amp; Infra Tracker</p>
                   </div>
                 </div>
 

@@ -120,13 +120,13 @@ export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
             <div className="absolute top-0 right-0 -mt-4 -mr-4 w-28 h-28 bg-white/10 rounded-full blur-xl pointer-events-none"></div>
             <div className="absolute bottom-0 left-0 -mb-4 -ml-4 w-24 h-24 bg-indigo-400/20 rounded-full blur-lg pointer-events-none"></div>
 
-            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-white/15 backdrop-blur-md rounded-2xl mx-auto flex items-center justify-center mb-1.5 sm:mb-2 shadow-inner border border-white/20">
-              <Lock className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+            <div className="w-12 h-12 sm:w-14 sm:h-14 mx-auto mb-2 rounded-2xl overflow-hidden shadow-lg border-2 border-white/30 bg-slate-900 flex items-center justify-center">
+              <img src="/icon.svg" alt="RR Enterprises" className="w-full h-full object-cover" />
             </div>
 
-            <h2 className="text-base sm:text-lg font-black tracking-tight">Technician Portal</h2>
+            <h2 className="text-base sm:text-lg font-black tracking-tight">RR Enterprises</h2>
             <p className="text-[11px] sm:text-xs text-indigo-100/90 mt-0.5 max-w-xs mx-auto">
-              Select your name to start logging installations
+              Smart Meter Installation &amp; Electrical Work
             </p>
           </div>
         ) : (

@@ -3,10 +3,12 @@ import { AppSettings, WorkRecord } from '../types';
 export const DEFAULT_SCRIPT_URL =
   (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env.VITE_GOOGLE_SCRIPT_URL)
     ? String((import.meta as any).env.VITE_GOOGLE_SCRIPT_URL).trim()
-    : 'https://script.google.com/macros/s/AKfycbzP-lgydlMTyTYTuvpyymUfRfD0YWa8BSMHBOAgZ6B5bFXAQd1Xw7CVaAF_WmykE9TB/exec';
+    : 'https://script.google.com/macros/s/AKfycbwtBZfxm9TB4qAdhdA5VCTzpYq9VoFhrPUNykcmStSyytmCU0PXSaoC7cBbXaw8pjvC/exec';
 
-const BROKEN_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbxjHS9zW3s8uJHqgCKx4jXIHetqCUv3pApMgIlGPEDbMuYPbAWxBp_nYsLDSLeFxxd0/exec';
+const PREVIOUS_SCRIPT_URLS = [
+  'https://script.google.com/macros/s/AKfycbxjHS9zW3s8uJHqgCKx4jXIHetqCUv3pApMgIlGPEDbMuYPbAWxBp_nYsLDSLeFxxd0/exec',
+  'https://script.google.com/macros/s/AKfycbzP-lgydlMTyTYTuvpyymUfRfD0YWa8BSMHBOAgZ6B5bFXAQd1Xw7CVaAF_WmykE9TB/exec',
+];
 
 export const DEFAULT_TECHNICIANS: string[] = ['Mohit', 'Rahul Sharma', 'Amit Kumar', 'Vikas Singh'];
 
@@ -32,14 +34,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export const fetchServerConfig = async (): Promise<{ scriptUrl?: string } | null> => {
   try {
     const res = await fetch('/api/config', { method: 'GET' });
-    if (res.ok) {
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
       if (data && data.status === 'success' && data.scriptUrl && data.scriptUrl.startsWith('http')) {
         return { scriptUrl: data.scriptUrl.trim() };
       }
     }
   } catch {
-    // Backend endpoint not reachable (e.g. static hosting)
+    // Backend endpoint not reachable (e.g. static hosting like Netlify)
   }
   return null;
 };
@@ -54,6 +57,13 @@ export const saveServerConfig = async (
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scriptUrl: scriptUrl.trim(), adminPassword: adminPassword.trim() }),
     });
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return {
+        success: false,
+        message: 'Static hosting (Netlify) detected. Server backend is not available on static hosting.',
+      };
+    }
     const data = await res.json();
     if (res.ok && data.status === 'success') {
       return { success: true, message: data.message || 'URL permanently saved on server backend!' };
@@ -203,9 +213,10 @@ export const getStoredSettings = (): AppSettings => {
     const raw = localStorage.getItem(SETTINGS_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
 
+    const isPreviousUrl = parsed.scriptUrl && PREVIOUS_SCRIPT_URLS.includes(parsed.scriptUrl);
     const resolvedScriptUrl =
       queryScriptUrl ||
-      (!parsed.scriptUrl || parsed.scriptUrl === BROKEN_SCRIPT_URL
+      (!parsed.scriptUrl || isPreviousUrl
         ? DEFAULT_SCRIPT_URL
         : parsed.scriptUrl);
 

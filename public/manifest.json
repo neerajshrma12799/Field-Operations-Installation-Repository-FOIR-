@@ -1,13 +1,13 @@
 {
   "id": "/",
-  "name": "Meter & Infra Tracker",
-  "short_name": "Work Tracker",
+  "name": "RR Enterprises - Smart Meter Tracker",
+  "short_name": "RR Meter",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f8fafc",
-  "theme_color": "#4f46e5",
-  "description": "Offline capable app for tracking Meter and Infra installations.",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "description": "RR Enterprises Smart Meter & Electrical Installation Tracker with Google Sheets Live Sync.",
   "orientation": "portrait",
   "icons": [
     {
