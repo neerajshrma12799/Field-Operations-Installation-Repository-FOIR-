@@ -38,9 +38,9 @@ export const PhotoModal: React.FC<PhotoModalProps> = ({
               <ZoomOut className="w-4 h-4" />
             </button>
             <button
-              onClick={() => setZoom((z) => Math.min(2.5, z + 0.25))}
+              onClick={() => setZoom((z) => Math.min(4.0, z + 0.35))}
               className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300"
-              title="Zoom In"
+              title="Zoom In (Inspect Numbers)"
             >
               <ZoomIn className="w-4 h-4" />
             </button>

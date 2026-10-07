@@ -23,6 +23,8 @@ interface QueueManagerProps {
   isSyncing: boolean;
   isOnline: boolean;
   onSync: () => Promise<void>;
+  onReconcile?: () => Promise<void> | void;
+  onImportQueue?: (records: WorkRecord[]) => void;
   onDeleteItem: (id: string) => void;
   onClearQueue: () => void;
   onPreviewPhoto: (url: string, title: string) => void;
@@ -33,11 +35,18 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
   isSyncing,
   isOnline,
   onSync,
+  onReconcile,
+  onImportQueue,
   onDeleteItem,
   onClearQueue,
   onPreviewPhoto,
 }) => {
   const [selectedRecord, setSelectedRecord] = useState<WorkRecord | null>(null);
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importError, setImportError] = useState('');
+  const [isReconciling, setIsReconciling] = useState(false);
+  const [copySuccess, setCopySuccess] = useState(false);
 
   const handleDownloadCSV = () => {
     triggerHaptic(30);
@@ -64,6 +73,47 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
     document.body.removeChild(link);
   };
 
+  const handleCopyQueue = () => {
+    triggerHaptic(30);
+    navigator.clipboard.writeText(JSON.stringify(queue, null, 2));
+    setCopySuccess(true);
+    setTimeout(() => setCopySuccess(false), 2500);
+  };
+
+  const handleManualReconcile = async () => {
+    if (!onReconcile) return;
+    setIsReconciling(true);
+    triggerHaptic(30);
+    try {
+      await onReconcile();
+    } finally {
+      setIsReconciling(false);
+    }
+  };
+
+  const handleExecuteImport = () => {
+    setImportError('');
+    if (!importText.trim()) {
+      setImportError('Please paste queue JSON data first.');
+      return;
+    }
+    try {
+      const parsed = JSON.parse(importText.trim());
+      const records = Array.isArray(parsed) ? parsed : [parsed];
+      if (records.length === 0 || !records[0].type) {
+        setImportError('Invalid queue format. Expecting an array of records.');
+        return;
+      }
+      if (onImportQueue) {
+        onImportQueue(records);
+        setImportText('');
+        setIsTransferModalOpen(false);
+      }
+    } catch (e: any) {
+      setImportError('Invalid JSON: ' + (e?.message || 'Parse error'));
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Top Header Card */}
@@ -81,11 +131,24 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
               )}
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Entries are safely stored on device and ready to sync to Google Sheets
+              Entries are safely stored on this phone and ready to sync to Google Sheets
             </p>
           </div>
 
-          <div className="flex items-center gap-2 self-start sm:self-auto">
+          <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+            {onReconcile && isOnline && (
+              <button
+                type="button"
+                onClick={handleManualReconcile}
+                disabled={isReconciling || isSyncing}
+                className="px-3 py-2.5 rounded-xl font-medium text-xs border border-slate-200 text-slate-700 bg-slate-50 hover:bg-slate-100 flex items-center gap-1.5 transition active:scale-95 cursor-pointer shadow-xs"
+                title="Check if any queued records are already recorded in Google Sheet and clear them"
+              >
+                <Loader2 className={`w-3.5 h-3.5 ${isReconciling ? 'animate-spin text-indigo-600' : 'text-slate-500'}`} />
+                <span>{isReconciling ? 'Checking Sheet...' : 'Check Sheet'}</span>
+              </button>
+            )}
+
             <button
               onClick={onSync}
               disabled={isSyncing || queue.length === 0 || !isOnline}
@@ -122,33 +185,54 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
           </div>
         )}
 
-        {/* Action toolbar for Exporting Backup */}
-        {queue.length > 0 && (
-          <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
-                <Download className="w-3.5 h-3.5" /> Backup:
-              </span>
-              <button
-                type="button"
-                onClick={handleDownloadCSV}
-                className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 transition"
-                title="Download CSV Backup"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                CSV
-              </button>
-              <button
-                type="button"
-                onClick={handleDownloadJSON}
-                className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 transition"
-                title="Download JSON Backup"
-              >
-                <FileCode className="w-3.5 h-3.5 text-indigo-600" />
-                JSON
-              </button>
-            </div>
+        {/* Device Local Storage Notice */}
+        <div className="mt-3.5 p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-start gap-2 text-xs text-slate-600">
+          <span className="text-base leading-none">📱</span>
+          <div className="leading-relaxed">
+            <strong className="text-slate-800">Phone-Local Offline Queue:</strong> Pending entries are saved on this phone until synced. Once synced, they appear on all phones in the <strong>History</strong> tab.
+          </div>
+        </div>
 
+        {/* Action toolbar for Exporting / Transferring */}
+        <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setIsTransferModalOpen(true)}
+              className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+              title="Share or transfer queue between phones"
+            >
+              🔄 Transfer / Import Queue
+            </button>
+
+            {queue.length > 0 && (
+              <>
+                <span className="text-xs font-semibold text-slate-400 flex items-center gap-1">
+                  <Download className="w-3.5 h-3.5" /> Backup:
+                </span>
+                <button
+                  type="button"
+                  onClick={handleDownloadCSV}
+                  className="px-2 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 transition"
+                  title="Download CSV Backup"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadJSON}
+                  className="px-2 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 transition"
+                  title="Download JSON Backup"
+                >
+                  <FileCode className="w-3.5 h-3.5 text-indigo-600" />
+                  JSON
+                </button>
+              </>
+            )}
+          </div>
+
+          {queue.length > 0 && (
             <button
               type="button"
               onClick={() => {
@@ -156,13 +240,13 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
                   onClearQueue();
                 }
               }}
-              className="text-xs text-rose-600 hover:text-rose-700 font-medium flex items-center gap-1 transition p-1"
+              className="text-xs text-rose-600 hover:text-rose-700 font-medium flex items-center gap-1 transition p-1 cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Clear Queue
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Queue items list */}
@@ -444,6 +528,105 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
               <button
                 onClick={() => setSelectedRecord(null)}
                 className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cross-Device Queue Transfer & Import Modal */}
+      {isTransferModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in"
+          onClick={() => setIsTransferModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b pb-3 border-slate-100">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🔄</span>
+                <div>
+                  <h3 className="font-bold text-base text-slate-900">
+                    Cross-Device Queue Transfer
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Move or copy pending records between phones
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsTransferModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 text-sm font-semibold p-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Step 1: Export from this phone */}
+            <div className="p-3.5 rounded-xl bg-indigo-50/60 border border-indigo-100 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-xs uppercase text-indigo-900 flex items-center gap-1.5">
+                  <span>1.</span> Share Queue from this Phone ({queue.length} items)
+                </span>
+                {queue.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleCopyQueue}
+                    className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs flex items-center gap-1 transition cursor-pointer"
+                  >
+                    {copySuccess ? '✓ Copied!' : 'Copy Queue Data'}
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-indigo-950/80 leading-relaxed">
+                Copy this phone's pending queue data to paste it on another phone (via WhatsApp, email, or Bluetooth).
+              </p>
+            </div>
+
+            {/* Step 2: Import from another phone */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+              <span className="font-bold text-xs uppercase text-slate-700 flex items-center gap-1.5">
+                <span>2.</span> Import Queue from Another Phone
+              </span>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Paste queue data copied from the first phone here to load it onto this device for syncing:
+              </p>
+              <textarea
+                value={importText}
+                onChange={(e) => {
+                  setImportText(e.target.value);
+                  setImportError('');
+                }}
+                placeholder="Paste queue JSON data here..."
+                rows={4}
+                className="w-full text-xs font-mono p-2.5 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+              />
+              {importError && (
+                <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">
+                  {importError}
+                </div>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleExecuteImport}
+                  disabled={!importText.trim()}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
+                >
+                  Import Records into Queue
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsTransferModalOpen(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition cursor-pointer"
               >
                 Close
               </button>

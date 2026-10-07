@@ -51,3 +51,5 @@ div[style*="z-index"][style*="bottom:"][style*="right:"] a[href*="netlify"] {
   opacity: 0 !important;
   pointer-events: none !important;
 }
+
+

@@ -1,13 +1,13 @@
 {
   "id": "/",
-  "name": "RR Enterprises - Smart Meter Tracker",
+  "name": "RR Enterprise - Smart Meter Tracker",
   "short_name": "RR Meter",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#0f172a",
-  "description": "RR Enterprises Smart Meter & Electrical Installation Tracker with Google Sheets Live Sync.",
+  "background_color": "#ffffff",
+  "theme_color": "#1d4ed8",
+  "description": "RR Enterprise Smart Meter & Electrical Installation Tracker with Google Sheets Live Sync.",
   "orientation": "portrait",
   "icons": [
     {

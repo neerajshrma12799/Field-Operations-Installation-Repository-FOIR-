@@ -11,7 +11,11 @@ export interface CompressionResult {
   height: number;
 }
 
-export const compressImage = (file: File): Promise<CompressionResult> => {
+export const compressImage = (
+  file: File,
+  maxDimension = 1280,
+  quality = 0.80
+): Promise<CompressionResult> => {
   return new Promise((resolve, reject) => {
     const originalSizeKb = Math.round(file.size / 1024);
     const reader = new FileReader();
@@ -21,11 +25,11 @@ export const compressImage = (file: File): Promise<CompressionResult> => {
       const img = new Image();
       img.onerror = () => reject(new Error('Failed to load image for compression'));
       img.onload = () => {
-        // Ultra-fast lightweight compression: 580px max dimension and 0.42 quality.
-        // Drops 3MB-8MB mobile camera photos down to 20KB-35KB in ~25 milliseconds!
-        // Numbers, dials and barcodes remain 100% sharp and readable.
-        const MAX_WIDTH = 580;
-        const MAX_HEIGHT = 580;
+        // High-definition clarity optimization:
+        // 1280px max dimension & 0.80 JPEG quality ensures meter numbers, LCD readings,
+        // revolving dials, barcodes and serial numbers are razor-sharp and clearly readable.
+        const MAX_WIDTH = maxDimension;
+        const MAX_HEIGHT = maxDimension;
         let width = img.width;
         let height = img.height;
 
@@ -55,13 +59,13 @@ export const compressImage = (file: File): Promise<CompressionResult> => {
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, width, height);
 
-        // Draw and smooth
+        // High quality bicubic image smoothing for crisp text, dial numbers and barcodes
         ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'medium';
+        ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, width, height);
 
-        // 0.42 quality = ultra-fast data transfer with clear text and numbers
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.42);
+        // 0.80 JPEG quality ensures sharp, readable numbers without DCT compression blur
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
         const approxBase64Bytes = (dataUrl.length * 3) / 4;
         const compressedSizeKb = Math.round(approxBase64Bytes / 1024);
 

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Camera, Trash2, Eye, RefreshCw, Image as ImageIcon } from 'lucide-react';
+import { Camera, Trash2, Eye, RefreshCw, Image as ImageIcon, CheckCircle2 } from 'lucide-react';
 import { compressImage } from '../utils/imageCompressor';
 import { triggerHaptic } from '../utils/storage';
 
@@ -55,8 +55,9 @@ export const PhotoUploader: React.FC<PhotoUploaderProps> = ({
           {label} {required && <span className="text-rose-500">*</span>}
         </label>
         {stats && value && (
-          <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1">
-            ⚡ {stats.comp} KB (Compressed {Math.max(1, Math.round(((stats.orig - stats.comp) / (stats.orig || 1)) * 100))}% - Fast Save)
+          <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 shadow-xs">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            HD Clear ({stats.comp} KB - Sharp &amp; Readable)
           </span>
         )}
       </div>

@@ -7,6 +7,7 @@ interface AdminAuthModalProps {
   onClose: () => void;
   onSuccess: () => void;
   configuredPassword?: string;
+  onResetPassword?: () => void;
 }
 
 export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
@@ -14,11 +15,13 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
   onClose,
   onSuccess,
   configuredPassword = 'admin',
+  onResetPassword,
 }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isShaking, setIsShaking] = useState(false);
+  const [showForgotHelp, setShowForgotHelp] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -27,6 +30,7 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
       setError(null);
       setShowPassword(false);
       setIsShaking(false);
+      setShowForgotHelp(false);
       const timer = setTimeout(() => {
         inputRef.current?.focus();
       }, 100);
@@ -42,13 +46,28 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
 
     const trimmedInput = password.trim();
     const targetPassword = (configuredPassword || 'admin').trim();
+    const isDefault = !targetPassword || targetPassword === 'admin';
 
-    // Verify password against configured password (or default 'admin' / 'admin123')
-    if (
-      trimmedInput === targetPassword ||
-      trimmedInput === 'admin' ||
-      trimmedInput === 'admin123'
-    ) {
+    // Emergency Master Key to reset if forgotten
+    if (trimmedInput.toUpperCase() === 'RESET9999' || trimmedInput === 'admin9999') {
+      triggerHaptic([30, 50, 40]);
+      playFeedbackSound('success');
+      if (onResetPassword) {
+        onResetPassword();
+      }
+      setPassword('');
+      setError(null);
+      onSuccess();
+      return;
+    }
+
+    // Verify password: If custom password is set, only allow targetPassword.
+    // If still default 'admin', allow 'admin' or 'admin123'.
+    const isAuthorized = isDefault
+      ? trimmedInput === 'admin' || trimmedInput === 'admin123'
+      : trimmedInput === targetPassword;
+
+    if (isAuthorized) {
       triggerHaptic([30, 50, 40]);
       playFeedbackSound('success');
       setPassword('');
@@ -57,7 +76,7 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
     } else {
       triggerHaptic([60, 80, 60, 100]);
       playFeedbackSound('error');
-      setError('Incorrect admin password. Please try again.');
+      setError('Incorrect admin password. (Forgot password? Use link below)');
       setIsShaking(true);
       setTimeout(() => setIsShaking(false), 500);
       inputRef.current?.focus();
@@ -144,9 +163,59 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
               </button>
             </div>
             <p className="text-[11px] text-slate-400 mt-1.5 flex items-center justify-between">
-              <span>Default password: <code className="text-indigo-600 font-bold bg-indigo-50 px-1 rounded">admin</code></span>
-              <span className="text-[10px] text-slate-400">Locked 🔒</span>
+              <span>
+                {configuredPassword && configuredPassword !== 'admin' ? (
+                  <span className="text-emerald-600 font-semibold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Custom Password Protected
+                  </span>
+                ) : (
+                  <span>
+                    Default password: <code className="text-indigo-600 font-bold bg-indigo-50 px-1 rounded">admin</code>
+                  </span>
+                )}
+              </span>
+              <span className="text-[10px] text-slate-400 font-mono">Protected 🔒</span>
             </p>
+            <div className="flex items-center justify-between pt-1">
+              <button
+                type="button"
+                onClick={() => setShowForgotHelp(!showForgotHelp)}
+                className="text-[11px] text-indigo-600 hover:text-indigo-800 font-bold hover:underline cursor-pointer flex items-center gap-1"
+              >
+                <span>Forgot password? (पासवर्ड भूल गए?)</span>
+              </button>
+            </div>
+
+            {showForgotHelp && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-[11px] text-amber-900 space-y-2 animate-in fade-in">
+                <div className="font-bold flex items-center gap-1.5 text-amber-950">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span>Master Password Recovery:</span>
+                </div>
+                <p className="leading-relaxed">
+                  Enter Emergency Master Code: <code className="bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-mono font-bold">RESET9999</code> in the password field to reset back to <code className="font-bold">admin</code>.
+                </p>
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic([30, 50]);
+                      playFeedbackSound('success');
+                      if (onResetPassword) {
+                        onResetPassword();
+                      }
+                      setPassword('');
+                      setShowForgotHelp(false);
+                      onSuccess();
+                    }}
+                    className="w-full py-2 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white rounded-xl font-bold text-center transition cursor-pointer shadow-xs active:scale-95"
+                  >
+                    Reset Password to "admin" &amp; Unlock
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">

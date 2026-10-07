@@ -3,7 +3,7 @@ import { CloudUpload, Save, Loader2, Gauge, AlertCircle, Sparkles, RefreshCw, Lo
 import { MeterInstallationRecord, VerticalType } from '../types';
 import { PhotoUploader } from './PhotoUploader';
 import { getIndianTimestamp, areSerialsEqual } from '../utils/timestamp';
-import { triggerHaptic } from '../utils/storage';
+import { triggerHaptic, getMeterFormDraft, saveMeterFormDraft, clearMeterFormDraft } from '../utils/storage';
 
 interface MeterInstallationFormProps {
   onSubmit: (data: Omit<MeterInstallationRecord, 'id'>) => Promise<void>;
@@ -44,20 +44,54 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
   existingRecords = [],
   sheetExistingMeterNos = [],
 }) => {
-  const [formData, setFormData] = useState({
-    technicianName: defaultTechnician || '',
-    company: '',
-    vertical: '' as VerticalType,
-    siteName: defaultSiteName || '',
-    flatNo: '',
-    oldMeterNo: '',
-    oldMeterMake: '',
-    oldMeterPhoto: null as string | null,
-    newMeterNo: '',
-    newMeterMake: '',
-    newMeterPhoto: null as string | null,
-    remark: '',
+  const [formData, setFormData] = useState(() => {
+    const draft = getMeterFormDraft();
+    if (draft && typeof draft === 'object') {
+      return {
+        technicianName: defaultTechnician || draft.technicianName || '',
+        company: draft.company || '',
+        vertical: (draft.vertical || '') as VerticalType,
+        siteName: draft.siteName || defaultSiteName || '',
+        flatNo: draft.flatNo || '',
+        oldMeterNo: draft.oldMeterNo || '',
+        oldMeterMake: draft.oldMeterMake || '',
+        oldMeterPhoto: draft.oldMeterPhoto || null,
+        newMeterNo: draft.newMeterNo || '',
+        newMeterMake: draft.newMeterMake || '',
+        newMeterPhoto: draft.newMeterPhoto || null,
+        remark: draft.remark || '',
+      };
+    }
+    return {
+      technicianName: defaultTechnician || '',
+      company: '',
+      vertical: '' as VerticalType,
+      siteName: defaultSiteName || '',
+      flatNo: '',
+      oldMeterNo: '',
+      oldMeterMake: '',
+      oldMeterPhoto: null as string | null,
+      newMeterNo: '',
+      newMeterMake: '',
+      newMeterPhoto: null as string | null,
+      remark: '',
+    };
   });
+
+  // Auto-save draft on change (debounced 250ms to prevent main-thread freeze during typing or photo uploads)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveMeterFormDraft(formData);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [formData]);
+
+  // Flush draft immediately on unmount or beforeunload (e.g. when opening camera app)
+  useEffect(() => {
+    return () => {
+      saveMeterFormDraft(formData);
+    };
+  }, [formData]);
 
   const [isCustomMake, setIsCustomMake] = useState(false);
   const [customMakeText, setCustomMakeText] = useState('');
@@ -74,12 +108,12 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
   // Robust check for meter number duplicates (alphanumeric, numeric, or alphabetic)
   const rawNewMeter = formData.newMeterNo;
   const existingMeterDuplicate = rawNewMeter && String(rawNewMeter).trim()
-    ? existingRecords.find((r) => areSerialsEqual(r.newMeterNo, rawNewMeter))
+    ? (existingRecords || []).find((r) => r && areSerialsEqual(r.newMeterNo, rawNewMeter))
     : undefined;
 
   const existsInGoogleSheet =
     rawNewMeter && String(rawNewMeter).trim() && !existingMeterDuplicate
-      ? sheetExistingMeterNos.some((no) => areSerialsEqual(no, rawNewMeter))
+      ? (sheetExistingMeterNos || []).some((no) => areSerialsEqual(no, rawNewMeter))
       : false;
 
   const isDuplicateMeter = Boolean(existingMeterDuplicate || existsInGoogleSheet);
@@ -126,7 +160,7 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validate()) {
+    if (!validate() || isDuplicateMeter) {
       triggerHaptic([40, 60, 40]);
       return;
     }
@@ -145,6 +179,9 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
       type: 'MeterInstallation',
       createdAt: Date.now(),
     });
+
+    // Clear saved draft on successful save
+    clearMeterFormDraft();
 
     // Reset inputs to clean blank state (technician stays locked if logged in)
     setFormData((prev) => ({
@@ -170,6 +207,12 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
   return (
     <form
       onSubmit={handleSubmit}
+      onKeyDown={(e) => {
+        // Prevent accidental form submit when pressing "Enter" on virtual mobile keyboard or barcode scanner
+        if (e.key === 'Enter' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+          e.preventDefault();
+        }
+      }}
       className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 sm:p-6 space-y-5"
     >
       {/* Clean Header */}
@@ -618,9 +661,11 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
         {/* Submit button */}
         <button
           type="submit"
-          disabled={isSubmitting}
-          className={`w-full py-3.5 px-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2.5 transition duration-200 active:scale-[0.99] disabled:opacity-60 cursor-pointer ${
-            isOnline
+          disabled={isSubmitting || isDuplicateMeter}
+          className={`w-full py-3.5 px-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2.5 transition duration-200 active:scale-[0.99] disabled:opacity-70 cursor-pointer ${
+            isDuplicateMeter
+              ? 'bg-rose-600 cursor-not-allowed shadow-rose-200'
+              : isOnline
               ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200 focus:ring-4 focus:ring-indigo-300'
               : 'bg-amber-600 hover:bg-amber-700 shadow-amber-200 focus:ring-4 focus:ring-amber-300'
           }`}
@@ -629,6 +674,11 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
             <>
               <Loader2 className="w-5 h-5 animate-spin" />
               <span>Processing Record...</span>
+            </>
+          ) : isDuplicateMeter ? (
+            <>
+              <AlertCircle className="w-5 h-5" />
+              <span>Duplicate Meter - Cannot Submit</span>
             </>
           ) : isOnline ? (
             <>

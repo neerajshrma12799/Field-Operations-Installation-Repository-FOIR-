@@ -36,6 +36,7 @@ import { TechnicianLogin } from './components/TechnicianLogin';
 import { TechnicianDataExportModal } from './components/TechnicianDataExportModal';
 import { AdminPortal } from './components/AdminPortal';
 import { AdminAuthModal } from './components/AdminAuthModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   getStoredQueue,
   saveStoredQueue,
@@ -49,7 +50,12 @@ import {
   saveStoredSettings,
   getLoggedInTechnician,
   setLoggedInTechnician,
+  getMeterFormDraft,
+  clearMeterFormDraft,
+  getInfraFormDraft,
+  clearInfraFormDraft,
   fetchServerConfig,
+  saveServerConfig,
   triggerHaptic,
   playFeedbackSound,
 } from './utils/storage';
@@ -90,8 +96,32 @@ export default function App() {
     }, 3800);
   }, []);
 
+  const syncLockRef = useRef(false);
+  const lastFormTabRef = useRef<'meter' | 'infra'>('meter');
+  useEffect(() => {
+    if (activeTab === 'meter' || activeTab === 'infra') {
+      lastFormTabRef.current = activeTab;
+    }
+  }, [activeTab]);
+
   const handleLogout = () => {
     triggerHaptic(30);
+    const meterDraft = getMeterFormDraft();
+    const infraDraft = getInfraFormDraft();
+    const hasUnsavedData = Boolean(
+      (meterDraft && (meterDraft.flatNo || meterDraft.newMeterNo || meterDraft.oldMeterNo)) ||
+      (infraDraft && (infraDraft.towerNo || infraDraft.deviceNo))
+    );
+
+    if (hasUnsavedData) {
+      const confirmLogout = window.confirm(
+        'Warning: You have unsubmitted entries in your form. Are you sure you want to log out?'
+      );
+      if (!confirmLogout) return;
+    }
+
+    clearMeterFormDraft();
+    clearInfraFormDraft();
     setLoggedInTechnician(null);
     setCurrentUser(null);
     showToast('Logged out of technician session', 'info');
@@ -122,19 +152,29 @@ export default function App() {
       fetchRemoteTechnicians(scriptToFetch, false);
     }
 
-    // Check backend server for globally saved Google Sheet URL
+    // Check backend server for globally saved Google Sheet URL & Admin Master Password
     fetchServerConfig().then((serverCfg) => {
-      if (serverCfg && serverCfg.scriptUrl && serverCfg.scriptUrl.startsWith('http')) {
-        const backendUrl = serverCfg.scriptUrl;
+      if (serverCfg) {
         setSettings((prev) => {
-          if (prev.scriptUrl !== backendUrl) {
-            const upd = { ...prev, scriptUrl: backendUrl };
+          let hasChanges = false;
+          const upd = { ...prev };
+          if (serverCfg.scriptUrl && serverCfg.scriptUrl.startsWith('http') && prev.scriptUrl !== serverCfg.scriptUrl) {
+            upd.scriptUrl = serverCfg.scriptUrl;
+            hasChanges = true;
+          }
+          if (serverCfg.adminPassword && serverCfg.adminPassword.trim().length > 0 && prev.adminPassword !== serverCfg.adminPassword.trim()) {
+            upd.adminPassword = serverCfg.adminPassword.trim();
+            hasChanges = true;
+          }
+          if (hasChanges) {
             saveStoredSettings(upd);
             return upd;
           }
           return prev;
         });
-        fetchRemoteTechnicians(backendUrl, false);
+        if (serverCfg.scriptUrl && serverCfg.scriptUrl.startsWith('http')) {
+          fetchRemoteTechnicians(serverCfg.scriptUrl, false);
+        }
       }
     });
   }, []);
@@ -161,7 +201,15 @@ export default function App() {
 
     try {
       setIsRefreshingSheet(true);
-      const res = await fetch(`${currentUrl}?action=getTechnicians`, { method: 'GET' });
+      const cacheBuster = `&_t=${Date.now()}`;
+      const fetchUrl = currentUrl.includes('?')
+        ? `${currentUrl}&action=getTechnicians${cacheBuster}`
+        : `${currentUrl}?action=getTechnicians${cacheBuster}`;
+      const res = await fetch(fetchUrl, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json' },
+      });
       const rawText = await res.text();
       let data: any = null;
       try {
@@ -250,13 +298,22 @@ export default function App() {
             updated.technicianPasswords = passMap;
           }
 
+          if (data.adminPassword && typeof data.adminPassword === 'string' && data.adminPassword.trim().length > 0) {
+            updated.adminPassword = data.adminPassword.trim();
+          } else {
+            updated.adminPassword = prev.adminPassword || 'admin';
+          }
+
           saveStoredSettings(updated);
           return updated;
         });
 
-        // Merge remote records from Google Sheets into local history
-        if (Array.isArray(data.sheetRecords) && data.sheetRecords.length > 0) {
+        // Sync remote records from Google Sheets into local history (Google Sheet is source of truth)
+        if (Array.isArray(data.sheetRecords)) {
           const currentHist = getStoredHistory();
+          // Keep only local records that are still pending sync (offline)
+          const pendingLocalRecords = currentHist.filter((r) => r.status === 'pending');
+
           const histMap = new Map<string, WorkRecord>();
 
           const getRecKey = (r: any) => {
@@ -272,17 +329,88 @@ export default function App() {
             return `${type}___${num}___${ts}___${site}___${tech}___${loc}`;
           };
 
-          // Existing local records
-          currentHist.forEach((r) => {
+          // 1. Live records from Google Sheet
+          data.sheetRecords.forEach((remoteRec: WorkRecord) => {
+            histMap.set(getRecKey(remoteRec), { ...remoteRec, status: 'synced' });
+          });
+
+          // 2. Add local offline un-synced records
+          pendingLocalRecords.forEach((r) => {
             histMap.set(getRecKey(r), r);
           });
-          // Merge remote records from Google Sheets
-          data.sheetRecords.forEach((remoteRec: WorkRecord) => {
-            histMap.set(getRecKey(remoteRec), remoteRec);
-          });
-          const merged = Array.from(histMap.values());
-          setStoredHistory(merged);
-          setHistory(merged);
+
+          const syncedHistory = Array.from(histMap.values());
+          setStoredHistory(syncedHistory);
+          setHistory(syncedHistory);
+
+          // 3. Auto-reconcile local offline queue against freshly fetched Google Sheet data
+          const currentQueue = getStoredQueue();
+          if (currentQueue.length > 0) {
+            const remoteRecords = Array.isArray(data.sheetRecords) ? data.sheetRecords : [];
+            const remoteMeters = Array.isArray(data.existingMeterNos) ? data.existingMeterNos : [];
+            const remoteDevices = Array.isArray(data.existingDeviceNos) ? data.existingDeviceNos : [];
+            const remoteIds = new Set(
+              remoteRecords.map((r: any) => (r.id ? String(r.id).trim() : ''))
+            );
+
+            const reconciledIds = new Set<string>();
+
+            const unSyncedQueue = currentQueue.filter((qItem) => {
+              // Check by permanent ID
+              if (qItem.id && remoteIds.has(String(qItem.id).trim())) {
+                reconciledIds.add(qItem.id);
+                return false;
+              }
+              // Check by Meter serial
+              if (qItem.type === 'MeterInstallation' && (qItem as any).newMeterNo) {
+                const mNo = (qItem as any).newMeterNo;
+                if (remoteMeters.some((n: string) => areSerialsEqual(n, mNo))) {
+                  reconciledIds.add(qItem.id);
+                  return false;
+                }
+                if (remoteRecords.some((r: any) => r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, mNo))) {
+                  reconciledIds.add(qItem.id);
+                  return false;
+                }
+              }
+              // Check by Infra device number
+              if (qItem.type === 'InfraInstallation' && (qItem as any).deviceNo) {
+                const dNo = (qItem as any).deviceNo;
+                if (remoteDevices.some((n: string) => areSerialsEqual(n, dNo))) {
+                  reconciledIds.add(qItem.id);
+                  return false;
+                }
+                if (remoteRecords.some((r: any) => r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, dNo))) {
+                  reconciledIds.add(qItem.id);
+                  return false;
+                }
+              }
+              return true;
+            });
+
+            if (unSyncedQueue.length !== currentQueue.length) {
+              updateQueue(unSyncedQueue);
+              // Also update local history items so their status changes to 'synced'
+              const curHist = getStoredHistory();
+              const updHist = curHist.map((h) =>
+                reconciledIds.has(h.id) ? { ...h, status: 'synced' as const } : h
+              );
+              setStoredHistory(updHist);
+              setHistory(updHist);
+
+              const clearedCount = currentQueue.length - unSyncedQueue.length;
+              showToast(
+                `Reconciled: ${clearedCount} queue record${clearedCount > 1 ? 's' : ''} confirmed in Google Sheet & cleared from queue ✓`,
+                'success'
+              );
+            }
+          }
+        } else if (data.sheetStats && Number(data.sheetStats.totalMeterInstall) === 0 && Number(data.sheetStats.totalInfraInstall) === 0) {
+          // If sheet stats explicitly say 0 for both, purge synced records from local history
+          const currentHist = getStoredHistory();
+          const pendingOnly = currentHist.filter((r) => r.status === 'pending');
+          setStoredHistory(pendingOnly);
+          setHistory(pendingOnly);
         }
 
         if (isManual) {
@@ -307,79 +435,205 @@ export default function App() {
     }
   };
 
-  // Sync Queue to Google Apps Script
+  // Sync Queue to Google Apps Script with Sequential Item-by-Item Safe Execution & Strict Deduplication
   const triggerSync = async () => {
-    if (queue.length === 0 || !isOnline || isSyncing) return;
+    if (syncLockRef.current) return;
+    const currentQueue = getStoredQueue();
+    if (currentQueue.length === 0 || !navigator.onLine || !settings.scriptUrl) return;
 
+    syncLockRef.current = true;
     setIsSyncing(true);
     triggerHaptic([30, 50, 30]);
 
+    let syncedCount = 0;
+    let reconciledCount = 0;
+
     try {
-      // POST using no-cors mode for Google Apps Script redirects
-      await fetch(settings.scriptUrl, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(queue),
-      });
+      // Loop sequentially item-by-item:
+      // This prevents giant payloads from timing out on slow 2G/3G connections,
+      // and ensures that once an item is synced, it is IMMEDIATELY removed from the queue!
+      for (let i = 0; i < currentQueue.length; i++) {
+        const item = currentQueue[i];
+        if (!item) continue;
 
-      // Successful sync
-      const syncedCount = queue.length;
-      addToHistory(queue);
-      setHistory(getStoredHistory());
-      updateQueue([]);
+        // 1. Strict Duplicate Check: Has this record ALREADY been recorded in Google Sheet or Synced History?
+        const isMeter = item.type === 'MeterInstallation';
+        const isInfra = item.type === 'InfraInstallation';
+        const mNo = isMeter ? (item as any).newMeterNo : undefined;
+        const dNo = isInfra ? (item as any).deviceNo : undefined;
 
-      playFeedbackSound('success');
-      triggerHaptic([50, 80, 50, 100]);
-      
-      confetti({
-        particleCount: 75,
-        spread: 70,
-        origin: { y: 0.8 },
-      });
+        const currentSettings = getStoredSettings();
+        const currentHist = getStoredHistory();
 
-      showToast(`Synced ${syncedCount} record${syncedCount > 1 ? 's' : ''} to Google Sheets!`, 'success');
+        const alreadyInSheet =
+          (isMeter && mNo && (currentSettings.existingMeterNos || []).some((no) => areSerialsEqual(no, mNo))) ||
+          (isInfra && dNo && (currentSettings.existingDeviceNos || []).some((no) => areSerialsEqual(no, dNo))) ||
+          (isMeter && mNo && currentHist.some((h) => h.status === 'synced' && h.type === 'MeterInstallation' && areSerialsEqual((h as any).newMeterNo, mNo))) ||
+          (isInfra && dNo && currentHist.some((h) => h.status === 'synced' && h.type === 'InfraInstallation' && areSerialsEqual((h as any).deviceNo, dNo))) ||
+          currentHist.some((h) => h.status === 'synced' && h.id && item.id && String(h.id).trim() === String(item.id).trim());
+
+        if (alreadyInSheet) {
+          // Record is already safely recorded in Google Sheet! Reconcile immediately without re-sending.
+          reconciledCount++;
+          // Mark status 'synced' in history
+          const updatedHist = currentHist.map((h) => (h.id === item.id ? { ...h, status: 'synced' as const } : h));
+          setStoredHistory(updatedHist);
+          setHistory(updatedHist);
+
+          // Remove immediately from queue
+          const remainingQueue = getStoredQueue().filter((q) => q.id !== item.id);
+          updateQueue(remainingQueue);
+          continue;
+        }
+
+        // 2. Transmit single record with AbortController timeout (35s)
+        const controller = new AbortController();
+        const timeoutTimer = setTimeout(() => controller.abort(), 35000);
+
+        try {
+          await fetch(settings.scriptUrl, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify([item]),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutTimer);
+
+          // Success: Immediately mark synced in History & remove from Queue!
+          syncedCount++;
+          const freshHist = getStoredHistory();
+          const itemExistsInHist = freshHist.some((h) => h.id === item.id);
+          const updatedHist = itemExistsInHist
+            ? freshHist.map((h) => (h.id === item.id ? { ...h, status: 'synced' as const } : h))
+            : [{ ...item, status: 'synced' as const }, ...freshHist];
+          setStoredHistory(updatedHist);
+          setHistory(updatedHist);
+
+          // Remove from local queue
+          const remainingQueue = getStoredQueue().filter((q) => q.id !== item.id);
+          updateQueue(remainingQueue);
+
+          // Register serial in settings so no subsequent entry can duplicate it
+          if (isMeter && mNo) {
+            setSettings((prev) => {
+              const list = prev.existingMeterNos || [];
+              if (!list.some((no) => areSerialsEqual(no, mNo))) {
+                const upd = { ...prev, existingMeterNos: [...list, String(mNo).trim()] };
+                saveStoredSettings(upd);
+                return upd;
+              }
+              return prev;
+            });
+          } else if (isInfra && dNo) {
+            setSettings((prev) => {
+              const list = prev.existingDeviceNos || [];
+              if (!list.some((no) => areSerialsEqual(no, dNo))) {
+                const upd = { ...prev, existingDeviceNos: [...list, String(dNo).trim()] };
+                saveStoredSettings(upd);
+                return upd;
+              }
+              return prev;
+            });
+          }
+        } catch (itemErr) {
+          clearTimeout(timeoutTimer);
+          console.warn('Network issue during item sync:', itemErr);
+          // Network dropped or timed out on this item; break loop so we don't spam failed attempts
+          break;
+        }
+      }
+
+      if (syncedCount > 0 || reconciledCount > 0) {
+        playFeedbackSound('success');
+        triggerHaptic([50, 80, 50, 100]);
+        confetti({
+          particleCount: 65,
+          spread: 70,
+          origin: { y: 0.8 },
+        });
+
+        const messages: string[] = [];
+        if (syncedCount > 0) messages.push(`Synced ${syncedCount} record${syncedCount > 1 ? 's' : ''}`);
+        if (reconciledCount > 0) messages.push(`${reconciledCount} duplicate(s) reconciled & cleared`);
+        showToast(messages.join(', ') + ' ✓', 'success');
+
+        // Refresh remote technicians & serials in background after sync
+        setTimeout(() => {
+          fetchRemoteTechnicians(false);
+        }, 1200);
+      } else {
+        const remaining = getStoredQueue();
+        if (remaining.length > 0 && !navigator.onLine) {
+          showToast('Device is offline. Queued items will sync when online.', 'info');
+        }
+      }
     } catch (error) {
-      console.error('Sync failed', error);
-      playFeedbackSound('error');
-      showToast('Sync failed. Please check your internet connection.', 'warning');
+      console.error('Sync queue loop error', error);
     } finally {
+      syncLockRef.current = false;
       setIsSyncing(false);
     }
   };
 
-  // Automatic background sync only when transitioning from offline to online
+  // Automatic background sync when transitioning from offline to online OR periodically every 25s when queue is pending
   const prevOnlineRef = useRef(isOnline);
   useEffect(() => {
+    // 1. When connection is restored
     if (!prevOnlineRef.current && isOnline && queue.length > 0 && settings.autoSync) {
       const timer = setTimeout(() => {
         triggerSync();
-      }, 2000);
+      }, 1500);
       return () => clearTimeout(timer);
     }
     prevOnlineRef.current = isOnline;
   }, [isOnline, queue.length, settings.autoSync]);
 
-  // Auto-sync dropdowns from Google Sheet in background when opening meter or infra form
+  // 2. Periodic sync check every 25s if queue has items and device is online
   useEffect(() => {
-    if (activeTab === 'meter' || activeTab === 'infra') {
+    if (!settings.scriptUrl) return;
+
+    const interval = setInterval(() => {
+      const q = getStoredQueue();
+      if (q.length > 0 && navigator.onLine && settings.autoSync && !syncLockRef.current) {
+        triggerSync();
+      }
+    }, 25000);
+
+    return () => clearInterval(interval);
+  }, [settings.scriptUrl, settings.autoSync]);
+
+  // 3. Auto-sync and reconcile when user switches to Queue tab
+  useEffect(() => {
+    if (activeTab === 'queue' && navigator.onLine) {
       fetchRemoteTechnicians(false);
+      const q = getStoredQueue();
+      if (q.length > 0 && !syncLockRef.current) {
+        triggerSync();
+      }
     }
   }, [activeTab]);
 
-  // Periodic background auto-sync every 45s and on window visibility/focus
+  // Periodic background auto-sync throttled every 45s so camera switching doesn't flicker or re-sync
+  const lastFetchTimeRef = useRef(Date.now());
   useEffect(() => {
     if (!settings.scriptUrl) return;
 
     const interval = setInterval(() => {
       if (navigator.onLine) {
+        lastFetchTimeRef.current = Date.now();
         fetchRemoteTechnicians(false);
       }
     }, 45000);
 
     const onFocusOrVisible = () => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
-        fetchRemoteTechnicians(false);
+        const now = Date.now();
+        // Only fetch if more than 45 seconds have passed since last fetch
+        if (now - lastFetchTimeRef.current > 45000) {
+          lastFetchTimeRef.current = now;
+          fetchRemoteTechnicians(false);
+        }
       }
     };
     document.addEventListener('visibilitychange', onFocusOrVisible);
@@ -392,36 +646,171 @@ export default function App() {
     };
   }, [settings.scriptUrl]);
 
+  // Synchronized ref for PopState handler so a single listener is attached without thrashing pushState
+  const uiStateRef = useRef({
+    previewPhoto,
+    isAdminPortalOpen,
+    isAdminAuthModalOpen,
+    isScriptModalOpen,
+    isExportModalOpen,
+    activeTab,
+  });
+
+  useEffect(() => {
+    uiStateRef.current = {
+      previewPhoto,
+      isAdminPortalOpen,
+      isAdminAuthModalOpen,
+      isScriptModalOpen,
+      isExportModalOpen,
+      activeTab,
+    };
+  }, [
+    previewPhoto,
+    isAdminPortalOpen,
+    isAdminAuthModalOpen,
+    isScriptModalOpen,
+    isExportModalOpen,
+    activeTab,
+  ]);
+
+  // Android Hardware / Swipe "Back" Button Guard: Prevents accidental browser exit or session loss while filling forms
+  useEffect(() => {
+    if (!currentUser) return;
+
+    // Push initial protected history state once per session
+    window.history.pushState({ app: 'technician_session' }, '');
+
+    const handlePopState = () => {
+      const currentUi = uiStateRef.current;
+
+      // 1. If photo preview modal is open, close photo preview
+      if (currentUi.previewPhoto) {
+        setPreviewPhoto(null);
+        window.history.pushState({ app: 'technician_session' }, '');
+        return;
+      }
+      // 2. If any admin or export modal is open, close modal
+      if (currentUi.isAdminPortalOpen) {
+        setIsAdminPortalOpen(false);
+        window.history.pushState({ app: 'technician_session' }, '');
+        return;
+      }
+      if (currentUi.isAdminAuthModalOpen) {
+        setIsAdminAuthModalOpen(false);
+        window.history.pushState({ app: 'technician_session' }, '');
+        return;
+      }
+      if (currentUi.isScriptModalOpen) {
+        setIsScriptModalOpen(false);
+        window.history.pushState({ app: 'technician_session' }, '');
+        return;
+      }
+      if (currentUi.isExportModalOpen) {
+        setIsExportModalOpen(false);
+        window.history.pushState({ app: 'technician_session' }, '');
+        return;
+      }
+
+      // 3. If on Queue or History tab, switch back to the technician's active form (Meter or Infra)
+      if (currentUi.activeTab === 'queue' || currentUi.activeTab === 'history') {
+        const returnTab = lastFormTabRef.current || 'meter';
+        setActiveTab(returnTab);
+        window.history.pushState({ app: 'technician_session' }, '');
+        return;
+      }
+
+      // 4. Technician is already on active form (Meter or Infra): Keep technician inside form, don't exit app or switch tab
+      window.history.pushState({ app: 'technician_session' }, '');
+      showToast('Form protected: Unsaved entries are safe. Tap "Logout" at top to end session.', 'info');
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [currentUser, showToast]);
+
+  // Beforeunload Guard: Prevents accidental browser refresh or page close when technician has unsaved form entries
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const meterDraft = getMeterFormDraft();
+      const infraDraft = getInfraFormDraft();
+      const hasUnsavedMeter = Boolean(
+        meterDraft &&
+          (meterDraft.flatNo ||
+            meterDraft.newMeterNo ||
+            meterDraft.oldMeterNo ||
+            meterDraft.siteName)
+      );
+      const hasUnsavedInfra = Boolean(
+        infraDraft &&
+          (infraDraft.towerNo ||
+            infraDraft.deviceNo ||
+            infraDraft.siteName)
+      );
+
+      if (hasUnsavedMeter || hasUnsavedInfra) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [currentUser]);
+
   // Handle Form Submission (Meter or Infra) - Ultra-Fast Instant Save
   const handleFormSubmit = async (
     data: Omit<MeterInstallationRecord, 'id'> | Omit<InfraInstallationRecord, 'id'>
   ) => {
     setIsSubmitting(true);
-    // Strict Duplicate Serial Validation (Alpha, Numeric, Alphanumeric)
+    // Strict Duplicate Serial Validation across Memory, LocalStorage, Queue, and Google Sheet Serials
+    const storedHistory = getStoredHistory();
+    const storedQueue = getStoredQueue();
+    const storedSettings = getStoredSettings();
+    const allKnownMeters = [
+      ...(settings.existingMeterNos || []),
+      ...(storedSettings.existingMeterNos || []),
+    ];
+    const allKnownDevices = [
+      ...(settings.existingDeviceNos || []),
+      ...(storedSettings.existingDeviceNos || []),
+    ];
+
     if (data.type === 'MeterInstallation' && (data as any).newMeterNo) {
       const meterNo = (data as any).newMeterNo;
       const isMeterDup =
         history.some((r) => r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, meterNo)) ||
+        storedHistory.some((r) => r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, meterNo)) ||
         queue.some((r) => r.type === 'MeterInstallation' && areSerialsEqual((r as any).newMeterNo, meterNo)) ||
-        (settings.existingMeterNos || []).some((no) => areSerialsEqual(no, meterNo));
+        storedQueue.some((r) => r.type === 'MeterInstallation' && areSerialsEqual((r as any).newMeterNo, meterNo)) ||
+        allKnownMeters.some((no) => areSerialsEqual(no, meterNo));
 
       if (isMeterDup) {
         setIsSubmitting(false);
         triggerHaptic([50, 100, 50]);
-        showToast(`Duplicate: Meter #${meterNo} already registered! Cannot re-submit.`, 'warning');
+        showToast(`Duplicate: Meter #${meterNo} already registered in Google Sheet or history! Cannot re-submit.`, 'warning');
         return;
       }
     } else if (data.type === 'InfraInstallation' && (data as any).deviceNo) {
       const devNo = (data as any).deviceNo;
       const isDeviceDup =
         history.some((r) => r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, devNo)) ||
+        storedHistory.some((r) => r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, devNo)) ||
         queue.some((r) => r.type === 'InfraInstallation' && areSerialsEqual((r as any).deviceNo, devNo)) ||
-        (settings.existingDeviceNos || []).some((no) => areSerialsEqual(no, devNo));
+        storedQueue.some((r) => r.type === 'InfraInstallation' && areSerialsEqual((r as any).deviceNo, devNo)) ||
+        allKnownDevices.some((no) => areSerialsEqual(no, devNo));
 
       if (isDeviceDup) {
         setIsSubmitting(false);
         triggerHaptic([50, 100, 50]);
-        showToast(`Duplicate: Device #${devNo} already registered! Cannot re-submit.`, 'warning');
+        showToast(`Duplicate: Device #${devNo} already registered in Google Sheet or history! Cannot re-submit.`, 'warning');
         return;
       }
     }
@@ -439,41 +828,76 @@ export default function App() {
     setLastSiteName(data.siteName);
     setLastTechnician(finalTech);
 
-    // 2. Immediately save to local history (Zero data loss guarantee)
+    // 2. Immediately register serial in settings to block any duplicate re-submission instantly
+    if (data.type === 'MeterInstallation' && (data as any).newMeterNo) {
+      const cleanMeterNo = String((data as any).newMeterNo).trim();
+      setSettings((prev) => {
+        const list = prev.existingMeterNos || [];
+        if (!list.some((no) => areSerialsEqual(no, cleanMeterNo))) {
+          const upd = { ...prev, existingMeterNos: [...list, cleanMeterNo] };
+          saveStoredSettings(upd);
+          return upd;
+        }
+        return prev;
+      });
+    } else if (data.type === 'InfraInstallation' && (data as any).deviceNo) {
+      const cleanDevNo = String((data as any).deviceNo).trim();
+      setSettings((prev) => {
+        const list = prev.existingDeviceNos || [];
+        if (!list.some((no) => areSerialsEqual(no, cleanDevNo))) {
+          const upd = { ...prev, existingDeviceNos: [...list, cleanDevNo] };
+          saveStoredSettings(upd);
+          return upd;
+        }
+        return prev;
+      });
+    }
+
+    // 3. Immediately save to local history (Zero data loss guarantee)
     addToHistory([newRecord]);
     setHistory(getStoredHistory());
 
-    // 3. Instant tactile & audio feedback in ~40ms
+    // 4. Instant tactile & audio feedback in ~40ms
     playFeedbackSound('success');
     triggerHaptic(40);
     showToast(isOnline ? 'Saved! Syncing to Google Sheet... ⚡' : 'Saved offline successfully! ⚡', 'success');
 
-    // 4. Release UI lock instantly so form resets and technician can enter next flat immediately
+    // 5. Release UI lock instantly so form resets and technician can enter next flat immediately
     setIsSubmitting(false);
 
-    // 5. Background sync to Google Apps Script (Non-blocking)
-    if (isOnline && settings.scriptUrl) {
-      fetch(settings.scriptUrl, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([newRecord]),
-      })
-        .then(() => {
-          showToast('Google Sheet updated successfully! ✓', 'success');
-        })
-        .catch((err) => {
-          console.warn('Background sync failed, moving to offline queue', err);
-          newRecord.status = 'pending';
-          const currentQueue = getStoredQueue();
-          updateQueue([...currentQueue, newRecord]);
-          showToast('Network unstable: saved to queue, will auto-sync', 'info');
-        });
-    } else {
-      // Offline mode: store in sync queue
-      newRecord.status = 'pending';
-      const currentQueue = getStoredQueue();
+    // 6. Safe Queue-First Architecture:
+    // Always store in sync queue with status 'pending' as the single coordinated source of truth
+    newRecord.status = 'pending';
+    const currentQueue = getStoredQueue();
+    if (!currentQueue.some((q) => q.id === newRecord.id)) {
       updateQueue([...currentQueue, newRecord]);
+    }
+
+    // 7. If online, immediately invoke the safe sequential sync pipeline
+    if (isOnline && settings.scriptUrl) {
+      setTimeout(() => {
+        triggerSync();
+      }, 150);
+    }
+  };
+
+  const handleImportQueue = (importedRecords: WorkRecord[]) => {
+    if (!Array.isArray(importedRecords) || importedRecords.length === 0) return;
+    const currentQ = getStoredQueue();
+    const existingIds = new Set(currentQ.map((q) => q.id));
+    const newItems = importedRecords.filter((r) => r && r.id && !existingIds.has(r.id));
+    if (newItems.length === 0) {
+      showToast('All imported records are already in queue.', 'info');
+      return;
+    }
+    const combined = [...currentQ, ...newItems];
+    updateQueue(combined);
+    // Also save to history so never lost
+    addToHistory(newItems);
+    setHistory(getStoredHistory());
+    showToast(`Imported ${newItems.length} record${newItems.length > 1 ? 's' : ''} into queue!`, 'success');
+    if (navigator.onLine && settings.scriptUrl) {
+      setTimeout(() => triggerSync(), 200);
     }
   };
 
@@ -578,7 +1002,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100/90 flex flex-col items-center w-full overflow-x-hidden">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-slate-100/90 flex flex-col items-center w-full overflow-x-hidden">
       {/* Responsive Auto-Resizing Container: Fluid 100% on phone, spacious multi-column dashboard on tablet & laptop */}
       <div className="w-full max-w-full sm:max-w-2xl md:max-w-3xl lg:max-w-4xl xl:max-w-5xl min-h-screen bg-slate-50 flex flex-col shadow-2xl relative border-x border-slate-200/60 pb-12 transition-all duration-300">
         {!currentUser ? (
@@ -587,12 +1012,12 @@ export default function App() {
             <header className="bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-700 text-white pt-3.5 pb-2.5 px-3 sm:px-5 shadow-md w-full">
               <div className="flex items-center justify-between gap-1.5 sm:gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-8 h-8 rounded-xl overflow-hidden bg-slate-900 border border-white/30 shrink-0 shadow-sm flex items-center justify-center">
-                    <img src="/icon.svg" alt="RR Enterprises" className="w-full h-full object-cover" />
+                  <div className="w-8 h-8 rounded-xl overflow-hidden bg-white border border-white/50 shrink-0 shadow-sm flex items-center justify-center p-0.5">
+                    <img src="/icon.svg" alt="RR Enterprise" className="w-full h-full object-contain" />
                   </div>
                   <div className="min-w-0">
                     <h1 className="text-sm sm:text-base font-extrabold tracking-tight leading-tight truncate">
-                      RR Enterprises
+                      RR Enterprise
                     </h1>
                     <p className="text-[10px] text-indigo-100/90 font-medium truncate">Smart Meter &amp; Electrical</p>
                   </div>
@@ -662,6 +1087,13 @@ export default function App() {
                 isRefreshing={isRefreshingSheet}
                 isOnline={isOnline}
                 onOpenAdminPortal={() => setIsAdminAuthModalOpen(true)}
+                onResetAdminPassword={() => {
+                  const updated = { ...settings, adminPassword: 'admin' };
+                  setSettings(updated);
+                  saveStoredSettings(updated);
+                  saveServerConfig(updated.scriptUrl || '', 'admin', 'admin').catch(() => {});
+                  showToast('Admin Master Password reset back to default "admin"!', 'info');
+                }}
               />
             </main>
           </div>
@@ -672,12 +1104,12 @@ export default function App() {
               {/* Top Bar: Title & Connectivity Badge & Controls */}
               <div className="flex items-center justify-between gap-1.5 sm:gap-2 mb-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-8 h-8 rounded-xl overflow-hidden bg-slate-900 border border-white/30 shrink-0 shadow-sm flex items-center justify-center">
-                    <img src="/icon.svg" alt="RR Enterprises" className="w-full h-full object-cover" />
+                  <div className="w-8 h-8 rounded-xl overflow-hidden bg-white border border-white/50 shrink-0 shadow-sm flex items-center justify-center p-0.5">
+                    <img src="/icon.svg" alt="RR Enterprise" className="w-full h-full object-contain" />
                   </div>
                   <div className="min-w-0">
                     <h1 className="text-sm sm:text-base font-extrabold tracking-tight leading-tight truncate">
-                      RR Enterprises
+                      RR Enterprise
                     </h1>
                     <p className="text-[10px] text-indigo-100/90 font-medium truncate">Smart Meter &amp; Infra Tracker</p>
                   </div>
@@ -869,9 +1301,9 @@ export default function App() {
               </div>
             )}
 
-            {/* Main Body Content */}
+            {/* Main Body Content - Forms kept mounted in DOM so tab switching or camera never wipes data */}
             <main className="flex-1 p-3.5 sm:p-4 space-y-4 overflow-y-auto">
-              {activeTab === 'meter' && (
+              <div className={activeTab === 'meter' ? 'block' : 'hidden'}>
                 <MeterInstallationForm
                   onSubmit={handleFormSubmit}
                   isSubmitting={isSubmitting}
@@ -889,13 +1321,13 @@ export default function App() {
                   onOpenScriptModal={() => setIsScriptModalOpen(true)}
                   hasColumnCData={hasColumnCData}
                   existingRecords={[...history, ...queue].filter(
-                    (r): r is MeterInstallationRecord => r.type === 'MeterInstallation'
+                    (r): r is MeterInstallationRecord => Boolean(r && r.type === 'MeterInstallation')
                   )}
                   sheetExistingMeterNos={settings.existingMeterNos || []}
                 />
-              )}
+              </div>
 
-              {activeTab === 'infra' && (
+              <div className={activeTab === 'infra' ? 'block' : 'hidden'}>
                 <InfraInstallationForm
                   onSubmit={handleFormSubmit}
                   isSubmitting={isSubmitting}
@@ -908,25 +1340,27 @@ export default function App() {
                   onSiteNameChange={setLastSiteName}
                   onPreviewPhoto={(url, title) => setPreviewPhoto({ url, title })}
                   existingRecords={[...history, ...queue].filter(
-                    (r): r is InfraInstallationRecord => r.type === 'InfraInstallation'
+                    (r): r is InfraInstallationRecord => Boolean(r && r.type === 'InfraInstallation')
                   )}
                   sheetExistingDeviceNos={settings.existingDeviceNos || []}
                 />
-              )}
+              </div>
 
-              {activeTab === 'queue' && (
+              <div className={activeTab === 'queue' ? 'block' : 'hidden'}>
                 <QueueManager
                   queue={queue}
                   isSyncing={isSyncing}
                   isOnline={isOnline}
                   onSync={triggerSync}
+                  onReconcile={() => fetchRemoteTechnicians(true)}
+                  onImportQueue={handleImportQueue}
                   onDeleteItem={handleDeleteQueueItem}
                   onClearQueue={handleClearQueue}
                   onPreviewPhoto={(url, title) => setPreviewPhoto({ url, title })}
                 />
-              )}
+              </div>
 
-              {activeTab === 'history' && (
+              <div className={activeTab === 'history' ? 'block' : 'hidden'}>
                 <HistoryManager
                   history={history}
                   currentUser={currentUser}
@@ -935,7 +1369,7 @@ export default function App() {
                   onDeleteItem={handleDeleteHistoryItem}
                   onPreviewPhoto={(url, title) => setPreviewPhoto({ url, title })}
                 />
-              )}
+              </div>
             </main>
           </>
         )}
@@ -973,6 +1407,13 @@ export default function App() {
             setIsAdminAuthModalOpen(false);
             setIsAdminPortalOpen(true);
             showToast('Admin Portal Unlocked', 'success');
+          }}
+          onResetPassword={() => {
+            const updated = { ...settings, adminPassword: 'admin' };
+            setSettings(updated);
+            saveStoredSettings(updated);
+            saveServerConfig(updated.scriptUrl || '', 'admin', 'admin').catch(() => {});
+            showToast('Admin Master Password reset back to default "admin"!', 'info');
           }}
         />
 
@@ -1019,5 +1460,6 @@ export default function App() {
         />
       </div>
     </div>
+    </ErrorBoundary>
   );
 }

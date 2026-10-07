@@ -50,6 +50,99 @@ function savePhotoToDrive(dataUri, fileName, folderName) {
   }
 }
 
+// Universal Date Formatter for IST (Asia/Kolkata)
+function extractDatePart(dateVal) {
+  if (!dateVal) return "";
+  if (Object.prototype.toString.call(dateVal) === '[object Date]') {
+    return Utilities.formatDate(dateVal, "Asia/Kolkata", "yyyy-MM-dd");
+  }
+  var s = String(dateVal).trim();
+  var dm = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+  if (dm) {
+    var d = dm[1].length === 1 ? "0" + dm[1] : dm[1];
+    var m = dm[2].length === 1 ? "0" + dm[2] : dm[2];
+    return dm[3] + "-" + m + "-" + d;
+  }
+  var ym = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (ym) {
+    var m2 = ym[2].length === 1 ? "0" + ym[2] : ym[2];
+    var d2 = ym[3].length === 1 ? "0" + ym[3] : ym[3];
+    return ym[1] + "-" + m2 + "-" + d2;
+  }
+  try {
+    var parsed = new Date(s);
+    if (!isNaN(parsed.getTime())) {
+      return Utilities.formatDate(parsed, "Asia/Kolkata", "yyyy-MM-dd");
+    }
+  } catch (e) {}
+  return "";
+}
+
+// Universal Sheet Finder by names or keywords (case-insensitive & whitespace-safe)
+function findSheetSmart(ss, nameKeywords) {
+  var all = ss.getSheets();
+  for (var s = 0; s < all.length; s++) {
+    var sName = all[s].getName().toLowerCase().replace(/[^a-z0-9]/g, "");
+    for (var k = 0; k < nameKeywords.length; k++) {
+      var kw = nameKeywords[k].toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (sName === kw || sName.indexOf(kw) !== -1) {
+        return all[s];
+      }
+    }
+  }
+  return null;
+}
+
+// Dynamic column index locator by matching header names
+function buildColIndexMap(headerRow) {
+  var map = {};
+  for (var col = 0; col < headerRow.length; col++) {
+    var val = String(headerRow[col] || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (val) map[val] = col;
+  }
+  return map;
+}
+
+function getColIdx(map, possibleNames, defaultIdx) {
+  for (var i = 0; i < possibleNames.length; i++) {
+    var clean = possibleNames[i].toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (map[clean] !== undefined) return map[clean];
+    // Partial search
+    for (var key in map) {
+      if (key.indexOf(clean) !== -1 || clean.indexOf(key) !== -1) return map[key];
+    }
+  }
+  return defaultIdx;
+}
+
+// Helper functions for bulletproof duplicate serial matching
+function registerSerial(map, val) {
+  if (val === undefined || val === null) return;
+  var raw = String(val).trim().toUpperCase();
+  if (!raw) return;
+  map[raw] = true;
+  var alnum = raw.replace(/[^A-Z0-9]/g, "");
+  if (alnum) {
+    map[alnum] = true;
+    var noZero = alnum.replace(/^0+/, "");
+    if (noZero) map[noZero] = true;
+  }
+}
+
+function isDuplicateSerial(map, val) {
+  if (val === undefined || val === null) return false;
+  var raw = String(val).trim().toUpperCase();
+  if (!raw) return false;
+  if (map[raw]) return true;
+  var alnum = raw.replace(/[^A-Z0-9]/g, "");
+  if (alnum) {
+    if (map[alnum]) return true;
+    var noZero = alnum.replace(/^0+/, "");
+    if (noZero && map[noZero]) return true;
+  }
+  return false;
+}
+
 // Helper function to update Technicians tab with all dropdowns and passwords
 // PRESERVES existing sheet data: never wipes out existing columns unless explicitly updated
 function handleUpdateConfig(ss, parsedPayload) {
@@ -151,6 +244,14 @@ function handleUpdateConfig(ss, parsedPayload) {
     techSheet.getRange(2, 1, rowsToWrite.length, 5).setValues(rowsToWrite);
   }
 
+  var savedAdminPass = "";
+  if (parsedPayload.adminPassword && String(parsedPayload.adminPassword).trim()) {
+    try {
+      savedAdminPass = String(parsedPayload.adminPassword).trim();
+      PropertiesService.getScriptProperties().setProperty("ADMIN_MASTER_PASSWORD", savedAdminPass);
+    } catch (propErr) {}
+  }
+
   return {
     status: "success",
     message: "Google Sheet 'Technicians' tab updated successfully! (" + techNames.length + " technicians, " + makes.length + " makes, " + comps.length + " companies, " + verts.length + " verticals)",
@@ -158,6 +259,7 @@ function handleUpdateConfig(ss, parsedPayload) {
     meterMakes: makes,
     companies: comps,
     verticals: verts,
+    adminPassword: savedAdminPass,
     timestamp: new Date().toISOString()
   };
 }
@@ -462,70 +564,6 @@ function doGet(e) {
     // Helper to get today's date formatted as YYYY-MM-DD in IST
     var todayIstStr = Utilities.formatDate(new Date(), "Asia/Kolkata", "yyyy-MM-dd");
 
-    function extractDatePart(dateVal) {
-      if (!dateVal) return "";
-      if (Object.prototype.toString.call(dateVal) === '[object Date]') {
-        return Utilities.formatDate(dateVal, "Asia/Kolkata", "yyyy-MM-dd");
-      }
-      var s = String(dateVal).trim();
-      var dm = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
-      if (dm) {
-        var d = dm[1].length === 1 ? "0" + dm[1] : dm[1];
-        var m = dm[2].length === 1 ? "0" + dm[2] : dm[2];
-        return dm[3] + "-" + m + "-" + d;
-      }
-      var ym = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-      if (ym) {
-        var m2 = ym[2].length === 1 ? "0" + ym[2] : ym[2];
-        var d2 = ym[3].length === 1 ? "0" + ym[3] : ym[3];
-        return ym[1] + "-" + m2 + "-" + d2;
-      }
-      try {
-        var parsed = new Date(s);
-        if (!isNaN(parsed.getTime())) {
-          return Utilities.formatDate(parsed, "Asia/Kolkata", "yyyy-MM-dd");
-        }
-      } catch (e) {}
-      return "";
-    }
-
-    // Helper to find sheet by candidate names or keywords (case-insensitive)
-    function findSheetSmart(ss, nameKeywords) {
-      var all = ss.getSheets();
-      for (var s = 0; s < all.length; s++) {
-        var sName = all[s].getName().toLowerCase().replace(/[^a-z0-9]/g, "");
-        for (var k = 0; k < nameKeywords.length; k++) {
-          var kw = nameKeywords[k].toLowerCase().replace(/[^a-z0-9]/g, "");
-          if (sName === kw || sName.indexOf(kw) !== -1) {
-            return all[s];
-          }
-        }
-      }
-      return null;
-    }
-
-    // Dynamic column index locator by matching header names
-    function buildColIndexMap(headerRow) {
-      var map = {};
-      for (var col = 0; col < headerRow.length; col++) {
-        var val = String(headerRow[col] || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-        if (val) map[val] = col;
-      }
-      return map;
-    }
-
-    function getColIdx(map, possibleNames, defaultIdx) {
-      for (var i = 0; i < possibleNames.length; i++) {
-        var clean = possibleNames[i].toLowerCase().replace(/[^a-z0-9]/g, "");
-        if (map[clean] !== undefined) return map[clean];
-        // Partial search
-        for (var key in map) {
-          if (key.indexOf(clean) !== -1 || clean.indexOf(key) !== -1) return map[key];
-        }
-      }
-      return defaultIdx;
-    }
-
     // 1. Total Meter Install & Today Meter Install from "Meter" sheet
     var totalMeterInstall = 0;
     var todayMeterInstall = 0;
@@ -660,11 +698,17 @@ function doGet(e) {
       }
     }
 
+    var savedAdminPass = "";
+    try {
+      savedAdminPass = PropertiesService.getScriptProperties().getProperty("ADMIN_MASTER_PASSWORD") || "";
+    } catch (propErr) {}
+
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
       technicians: technicians,
       technicianPasswords: technicianPasswords,
       technicianAccounts: technicianAccounts,
+      adminPassword: savedAdminPass,
       meterMakes: meterMakes,
       makes: meterMakes,
       companies: companies,
@@ -696,10 +740,15 @@ function doGet(e) {
 }
 
 function doPost(e) {
+  var lock = LockService.getScriptLock();
+  var hasLock = false;
   try {
+    // Acquire mutex lock (wait up to 30s) to prevent concurrent write collisions & race condition duplicates
+    hasLock = lock.tryLock(30000);
+
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var meterSheet = ss.getSheetByName("Meter") || ss.getSheetByName("Sheet1") || ss.getActiveSheet();
-    var infraSheet = ss.getSheetByName("Infra") || ss.getSheetByName("InfraInstallation");
+    var meterSheet = findSheetSmart(ss, ["meter", "meters", "meterinstallation", "sheet1"]) || ss.getSheetByName("Meter") || ss.getSheetByName("Sheet1") || ss.getActiveSheet();
+    var infraSheet = findSheetSmart(ss, ["infra", "infras", "infrainstallation", "infrastructure", "sheet2"]) || ss.getSheetByName("Infra") || ss.getSheetByName("InfraInstallation");
 
     var contents = "";
     if (e && e.postData && e.postData.contents) {
@@ -743,29 +792,53 @@ function doPost(e) {
       records = [records];
     }
 
-    // Pre-load existing meter numbers to block duplicate post in sheet
+    // Pre-load existing meter numbers using smart header detection and deep scan
     var sheetMeterMap = {};
+    var sheetRecordIdMap = {};
     if (meterSheet && meterSheet.getLastRow() > 1) {
-      var mRows = meterSheet.getRange(2, 10, meterSheet.getLastRow() - 1, 1).getValues();
-      for (var mi = 0; mi < mRows.length; mi++) {
-        var mv = mRows[mi][0] ? String(mRows[mi][0]).trim().toUpperCase() : "";
-        if (mv) sheetMeterMap[mv] = true;
+      var mMaxCols = Math.max(meterSheet.getLastColumn(), 14);
+      var mAllValues = meterSheet.getRange(1, 1, meterSheet.getLastRow(), mMaxCols).getValues();
+      var mHeader = mAllValues[0];
+      var mColMap = buildColIndexMap(mHeader);
+      var mcNewMeter = getColIdx(mColMap, ["newmeterno", "newmeter", "meter", "meterno"], 9);
+      var mcId = getColIdx(mColMap, ["id", "recordid"], 13);
+
+      for (var mi = 1; mi < mAllValues.length; mi++) {
+        var mRowVal = mAllValues[mi];
+        var mv = mRowVal[mcNewMeter];
+        registerSerial(sheetMeterMap, mv);
+        var recId = mRowVal[mcId];
+        if (recId) sheetRecordIdMap[String(recId).trim()] = true;
       }
     }
 
-    // Pre-load existing device numbers to block duplicate post in sheet
+    // Pre-load existing device numbers using smart header detection
     var sheetDeviceMap = {};
     var targetInfra = infraSheet || meterSheet;
     if (targetInfra && targetInfra.getLastRow() > 1) {
-      var dRows = targetInfra.getRange(2, 7, targetInfra.getLastRow() - 1, 1).getValues();
-      for (var di = 0; di < dRows.length; di++) {
-        var dv = dRows[di][0] ? String(dRows[di][0]).trim().toUpperCase() : "";
-        if (dv) sheetDeviceMap[dv] = true;
+      var iMaxCols = Math.max(targetInfra.getLastColumn(), 11);
+      var iAllValues = targetInfra.getRange(1, 1, targetInfra.getLastRow(), iMaxCols).getValues();
+      var iHeader = iAllValues[0];
+      var iColMap = buildColIndexMap(iHeader);
+      var icDevNo = getColIdx(iColMap, ["deviceno", "device", "devicenumber", "serialno"], 6);
+      var icId = getColIdx(iColMap, ["id", "recordid"], 10);
+
+      for (var di = 1; di < iAllValues.length; di++) {
+        var iRowVal = iAllValues[di];
+        var dv = iRowVal[icDevNo];
+        registerSerial(sheetDeviceMap, dv);
+        var recId = iRowVal[icId];
+        if (recId) sheetRecordIdMap[String(recId).trim()] = true;
       }
     }
 
+    var newlyAddedCount = 0;
+    var deduplicatedCount = 0;
+
     for (var i = 0; i < records.length; i++) {
       var r = records[i];
+      if (!r) continue;
+
       var now = new Date();
       var timePrefix = Utilities.formatDate(now, "Asia/Kolkata", "yyyyMMdd_HHmmss");
       var defaultIstDate = Utilities.formatDate(now, "Asia/Kolkata", "dd/MM/yyyy, hh:mm:ss a");
@@ -778,13 +851,16 @@ function doPost(e) {
         }
       }
 
+      // Check for duplicate Record ID (network retry or multi-sync)
+      if (r.id && sheetRecordIdMap[String(r.id).trim()]) {
+        deduplicatedCount++;
+        continue;
+      }
+
       if (r.type === "MeterInstallation") {
-        var newMeterKey = r.newMeterNo ? String(r.newMeterNo).trim().toUpperCase() : "";
-        if (newMeterKey && sheetMeterMap[newMeterKey]) {
-          return ContentService.createTextOutput(JSON.stringify({
-            status: "error",
-            message: "Duplicate Meter Number! " + r.newMeterNo + " already exists in Google Sheet!"
-          })).setMimeType(ContentService.MimeType.JSON);
+        if (r.newMeterNo && isDuplicateSerial(sheetMeterMap, r.newMeterNo)) {
+          deduplicatedCount++;
+          continue;
         }
 
         // Save Old Meter Photo in Google Drive
@@ -820,14 +896,13 @@ function doPost(e) {
           r.remark || "",
           meterId
         ]);
-        if (newMeterKey) sheetMeterMap[newMeterKey] = true;
+        registerSerial(sheetMeterMap, r.newMeterNo);
+        if (meterId) sheetRecordIdMap[meterId] = true;
+        newlyAddedCount++;
       } else if (r.type === "InfraInstallation") {
-        var devKey = r.deviceNo ? String(r.deviceNo).trim().toUpperCase() : "";
-        if (devKey && sheetDeviceMap[devKey]) {
-          return ContentService.createTextOutput(JSON.stringify({
-            status: "error",
-            message: "Duplicate Device Number! " + r.deviceNo + " already exists in Google Sheet!"
-          })).setMimeType(ContentService.MimeType.JSON);
+        if (r.deviceNo && isDuplicateSerial(sheetDeviceMap, r.deviceNo)) {
+          deduplicatedCount++;
+          continue;
         }
 
         // Save Device Photo in Google Drive
@@ -853,19 +928,31 @@ function doPost(e) {
           r.remark || "",
           devId
         ]);
-        if (devKey) sheetDeviceMap[devKey] = true;
+        registerSerial(sheetDeviceMap, r.deviceNo);
+        if (devId) sheetRecordIdMap[devId] = true;
+        newlyAddedCount++;
       }
     }
 
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
-      count: records.length
+      count: newlyAddedCount,
+      deduplicated: deduplicatedCount,
+      message: newlyAddedCount > 0
+        ? "Successfully saved " + newlyAddedCount + " record(s) to Google Sheets!"
+        : "Record(s) already saved in Google Sheets. Deduplication verified."
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({
       status: "error",
       message: err.toString()
     })).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    if (hasLock) {
+      try {
+        lock.releaseLock();
+      } catch (lErr) {}
+    }
   }
 }
 `;

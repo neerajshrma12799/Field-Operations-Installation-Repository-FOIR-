@@ -3,9 +3,10 @@ import { AppSettings, WorkRecord } from '../types';
 export const DEFAULT_SCRIPT_URL =
   (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env.VITE_GOOGLE_SCRIPT_URL)
     ? String((import.meta as any).env.VITE_GOOGLE_SCRIPT_URL).trim()
-    : 'https://script.google.com/macros/s/AKfycbxNezil-kHx7kZq8mOZHItEd5Jp2X63WiUdK023cQTrgSjEO2RVtacKHXbP3ZHY0lGI/exec';
+    : 'https://script.google.com/macros/s/AKfycbx6kcq_E5ipl-rfNp08YfY8HhdSJChQt3v4fzHzG7F7FZcLfXeL0jDQhi-Le-yYoadB/exec';
 
 const PREVIOUS_SCRIPT_URLS = [
+  'https://script.google.com/macros/s/AKfycbxNezil-kHx7kZq8mOZHItEd5Jp2X63WiUdK023cQTrgSjEO2RVtacKHXbP3ZHY0lGI/exec',
   'https://script.google.com/macros/s/AKfycbwtBZfxm9TB4qAdhdA5VCTzpYq9VoFhrPUNykcmStSyytmCU0PXSaoC7cBbXaw8pjvC/exec',
   'https://script.google.com/macros/s/AKfycbxjHS9zW3s8uJHqgCKx4jXIHetqCUv3pApMgIlGPEDbMuYPbAWxBp_nYsLDSLeFxxd0/exec',
   'https://script.google.com/macros/s/AKfycbzP-lgydlMTyTYTuvpyymUfRfD0YWa8BSMHBOAgZ6B5bFXAQd1Xw7CVaAF_WmykE9TB/exec',
@@ -32,14 +33,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
   soundEnabled: true,
 };
 
-export const fetchServerConfig = async (): Promise<{ scriptUrl?: string } | null> => {
+export const fetchServerConfig = async (): Promise<{ scriptUrl?: string; adminPassword?: string } | null> => {
   try {
     const res = await fetch('/api/config', { method: 'GET' });
     const contentType = res.headers.get('content-type') || '';
     if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
-      if (data && data.status === 'success' && data.scriptUrl && data.scriptUrl.startsWith('http')) {
-        return { scriptUrl: data.scriptUrl.trim() };
+      if (data && data.status === 'success') {
+        const out: { scriptUrl?: string; adminPassword?: string } = {};
+        if (data.scriptUrl && typeof data.scriptUrl === 'string' && data.scriptUrl.startsWith('http')) {
+          out.scriptUrl = data.scriptUrl.trim();
+        }
+        if (data.adminPassword && typeof data.adminPassword === 'string' && data.adminPassword.trim().length > 0) {
+          out.adminPassword = data.adminPassword.trim();
+        }
+        return out;
       }
     }
   } catch {
@@ -50,24 +58,33 @@ export const fetchServerConfig = async (): Promise<{ scriptUrl?: string } | null
 
 export const saveServerConfig = async (
   scriptUrl: string,
-  adminPassword: string
-): Promise<{ success: boolean; message: string }> => {
+  adminPassword: string,
+  newAdminPassword?: string
+): Promise<{ success: boolean; message: string; adminPassword?: string }> => {
   try {
     const res = await fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scriptUrl: scriptUrl.trim(), adminPassword: adminPassword.trim() }),
+      body: JSON.stringify({
+        scriptUrl: scriptUrl ? scriptUrl.trim() : '',
+        adminPassword: adminPassword ? adminPassword.trim() : 'admin',
+        newAdminPassword: newAdminPassword ? newAdminPassword.trim() : undefined,
+      }),
     });
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
       return {
         success: false,
-        message: 'Static hosting (Netlify) detected. Server backend is not available on static hosting.',
+        message: 'Static hosting (Netlify) detected. Saved in your local browser storage.',
       };
     }
     const data = await res.json();
     if (res.ok && data.status === 'success') {
-      return { success: true, message: data.message || 'URL permanently saved on server backend!' };
+      return {
+        success: true,
+        message: data.message || 'Configuration permanently saved on server backend!',
+        adminPassword: data.adminPassword,
+      };
     }
     return { success: false, message: data.message || 'Server returned error' };
   } catch (err: any) {
@@ -82,22 +99,34 @@ const LOGGED_IN_TECH_KEY = 'meter_logged_in_tech';
 
 export const getLoggedInTechnician = (): string | null => {
   try {
-    return localStorage.getItem(LOGGED_IN_TECH_KEY);
-  } catch {
-    return null;
-  }
+    const fromLocal = localStorage.getItem(LOGGED_IN_TECH_KEY);
+    if (fromLocal && fromLocal.trim()) return fromLocal.trim();
+  } catch {}
+  try {
+    const fromSession = sessionStorage.getItem(LOGGED_IN_TECH_KEY);
+    if (fromSession && fromSession.trim()) return fromSession.trim();
+  } catch {}
+  return null;
 };
 
 export const setLoggedInTechnician = (techName: string | null): void => {
+  const clean = techName && typeof techName === 'string' ? techName.trim() : null;
   try {
-    if (techName) {
-      localStorage.setItem(LOGGED_IN_TECH_KEY, techName);
+    if (clean) {
+      localStorage.setItem(LOGGED_IN_TECH_KEY, clean);
     } else {
       localStorage.removeItem(LOGGED_IN_TECH_KEY);
     }
   } catch (e) {
-    console.error('Error saving logged in tech', e);
+    console.error('Error saving logged in tech to localStorage', e);
   }
+  try {
+    if (clean) {
+      sessionStorage.setItem(LOGGED_IN_TECH_KEY, clean);
+    } else {
+      sessionStorage.removeItem(LOGGED_IN_TECH_KEY);
+    }
+  } catch {}
 };
 
 export const verifyTechnicianPassword = (
@@ -241,6 +270,10 @@ export const getStoredSettings = (): AppSettings => {
     const mergedSettings: AppSettings = {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      adminPassword:
+        parsed.adminPassword && String(parsed.adminPassword).trim().length > 0
+          ? String(parsed.adminPassword).trim()
+          : DEFAULT_ADMIN_PASSWORD,
       scriptUrl: resolvedScriptUrl,
       sheetStats: parsed.sheetStats,
       technicianPasswords: parsed.technicianPasswords || {},
@@ -248,6 +281,8 @@ export const getStoredSettings = (): AppSettings => {
       meterMakes: sanitizedMakes,
       companies: sanitizedCompanies,
       verticals: sanitizedVerticals,
+      existingMeterNos: Array.isArray(parsed.existingMeterNos) ? parsed.existingMeterNos : [],
+      existingDeviceNos: Array.isArray(parsed.existingDeviceNos) ? parsed.existingDeviceNos : [],
       technicians:
         Array.isArray(parsed.technicians) && parsed.technicians.length > 0
           ? parsed.technicians
@@ -405,4 +440,83 @@ export const exportRecordsToCSV = (records: WorkRecord[]): string => {
   });
 
   return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+};
+
+const METER_DRAFT_KEY = 'meter_form_draft_v1';
+const INFRA_DRAFT_KEY = 'infra_form_draft_v1';
+
+export const getMeterFormDraft = (): any => {
+  try {
+    const raw = localStorage.getItem(METER_DRAFT_KEY) || sessionStorage.getItem(METER_DRAFT_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+export const saveMeterFormDraft = (data: any): void => {
+  if (!data) {
+    clearMeterFormDraft();
+    return;
+  }
+  try {
+    const serialized = JSON.stringify(data);
+    localStorage.setItem(METER_DRAFT_KEY, serialized);
+    sessionStorage.setItem(METER_DRAFT_KEY, serialized);
+  } catch {
+    // QuotaExceededError handling: if storage is constrained (e.g. large base64 photos),
+    // strip large photo strings and securely persist all text fields (siteName, flatNo,
+    // meter numbers, company, etc.) so text data is NEVER lost!
+    try {
+      const textOnly = {
+        ...data,
+        oldMeterPhoto: null,
+        newMeterPhoto: null,
+      };
+      const fallbackStr = JSON.stringify(textOnly);
+      localStorage.setItem(METER_DRAFT_KEY, fallbackStr);
+      sessionStorage.setItem(METER_DRAFT_KEY, fallbackStr);
+    } catch {}
+  }
+};
+
+export const clearMeterFormDraft = (): void => {
+  try { localStorage.removeItem(METER_DRAFT_KEY); } catch {}
+  try { sessionStorage.removeItem(METER_DRAFT_KEY); } catch {}
+};
+
+export const getInfraFormDraft = (): any => {
+  try {
+    const raw = localStorage.getItem(INFRA_DRAFT_KEY) || sessionStorage.getItem(INFRA_DRAFT_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+export const saveInfraFormDraft = (data: any): void => {
+  if (!data) {
+    clearInfraFormDraft();
+    return;
+  }
+  try {
+    const serialized = JSON.stringify(data);
+    localStorage.setItem(INFRA_DRAFT_KEY, serialized);
+    sessionStorage.setItem(INFRA_DRAFT_KEY, serialized);
+  } catch {
+    try {
+      const textOnly = {
+        ...data,
+        devicePhoto: null,
+      };
+      const fallbackStr = JSON.stringify(textOnly);
+      localStorage.setItem(INFRA_DRAFT_KEY, fallbackStr);
+      sessionStorage.setItem(INFRA_DRAFT_KEY, fallbackStr);
+    } catch {}
+  }
+};
+
+export const clearInfraFormDraft = (): void => {
+  try { localStorage.removeItem(INFRA_DRAFT_KEY); } catch {}
+  try { sessionStorage.removeItem(INFRA_DRAFT_KEY); } catch {}
 };

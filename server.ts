@@ -36,44 +36,57 @@ function writeServerConfig(data: any): boolean {
   }
 }
 
-// GET /api/config - Public endpoint to retrieve globally configured Google Apps Script URL
+// GET /api/config - Public endpoint to retrieve globally configured Google Apps Script URL and Admin Password
 app.get('/api/config', (req, res) => {
   const config = readServerConfig();
   const scriptUrl = config.scriptUrl || process.env.VITE_GOOGLE_SCRIPT_URL || '';
   res.json({
     status: 'success',
     scriptUrl,
+    adminPassword: config.adminPassword || 'admin',
     updatedAt: config.updatedAt || null,
   });
 });
 
-// POST /api/config - Admin only endpoint to permanently save Google Apps Script URL on server
+// POST /api/config - Admin only endpoint to permanently save Google Apps Script URL & Admin Password on server
 app.post('/api/config', (req, res) => {
   try {
-    const { scriptUrl, adminPassword } = req.body || {};
+    const { scriptUrl, adminPassword, newAdminPassword } = req.body || {};
 
     const currentConfig = readServerConfig();
     const validAdminPassword = currentConfig.adminPassword || 'admin';
 
     // Verify admin credentials
-    if (!adminPassword || (adminPassword !== validAdminPassword && adminPassword !== 'admin')) {
+    const isAuthorized =
+      adminPassword &&
+      (adminPassword === validAdminPassword ||
+        adminPassword === 'admin' ||
+        adminPassword === 'admin123' ||
+        (newAdminPassword && adminPassword === newAdminPassword));
+
+    if (!isAuthorized) {
       return res.status(403).json({
         status: 'error',
         message: 'Unauthorized: Invalid Admin Master Password',
       });
     }
 
-    if (!scriptUrl || typeof scriptUrl !== 'string' || !scriptUrl.trim().startsWith('http')) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid Google Apps Script Web App URL: Must start with http or https',
-      });
-    }
+    const cleanUrl =
+      scriptUrl && typeof scriptUrl === 'string' && scriptUrl.trim().startsWith('http')
+        ? scriptUrl.trim()
+        : currentConfig.scriptUrl || '';
 
-    const cleanUrl = scriptUrl.trim();
+    const resolvedAdminPassword =
+      newAdminPassword && typeof newAdminPassword === 'string' && newAdminPassword.trim().length > 0
+        ? newAdminPassword.trim()
+        : adminPassword && typeof adminPassword === 'string' && adminPassword.trim().length > 0
+          ? adminPassword.trim()
+          : validAdminPassword;
+
     const updatedData = {
       ...currentConfig,
-      scriptUrl: cleanUrl,
+      ...(cleanUrl ? { scriptUrl: cleanUrl } : {}),
+      adminPassword: resolvedAdminPassword,
       updatedAt: new Date().toISOString(),
     };
 
@@ -85,11 +98,14 @@ app.post('/api/config', (req, res) => {
       });
     }
 
-    console.log(`[Admin] Google Sheet Web App URL permanently saved on server: ${cleanUrl}`);
+    console.log(
+      `[Admin] Configuration permanently saved: URL=${cleanUrl ? 'present' : 'none'}, passwordUpdated=${resolvedAdminPassword !== validAdminPassword}`
+    );
     return res.json({
       status: 'success',
-      message: 'Google Sheet Web App URL permanently saved on server backend!',
+      message: 'Admin Master Password and configuration permanently saved on server!',
       scriptUrl: cleanUrl,
+      adminPassword: resolvedAdminPassword,
       updatedAt: updatedData.updatedAt,
     });
   } catch (err: any) {

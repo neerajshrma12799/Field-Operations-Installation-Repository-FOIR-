@@ -22,6 +22,7 @@ interface TechnicianLoginProps {
   isRefreshing: boolean;
   isOnline: boolean;
   onOpenAdminPortal?: () => void;
+  onResetAdminPassword?: () => void;
 }
 
 export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
@@ -31,6 +32,7 @@ export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
   isRefreshing,
   isOnline,
   onOpenAdminPortal,
+  onResetAdminPassword,
 }) => {
   const [selectedTech, setSelectedTech] = useState<string>('');
   const [password, setPassword] = useState('');
@@ -93,8 +95,30 @@ export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
     e.preventDefault();
     setAdminError(null);
 
-    const masterPass = settings.adminPassword || 'admin';
-    if (adminPasswordInput.trim() === masterPass || adminPasswordInput.trim() === 'admin123') {
+    const masterPass = (settings.adminPassword || 'admin').trim();
+    const isDefault = !masterPass || masterPass === 'admin';
+    const trimmedInput = adminPasswordInput.trim();
+
+    // Emergency Master Key to reset if forgotten
+    if (trimmedInput.toUpperCase() === 'RESET9999' || trimmedInput === 'admin9999') {
+      triggerHaptic([30, 50]);
+      playFeedbackSound('success');
+      setShowAdminLoginModal(false);
+      setAdminPasswordInput('');
+      if (onResetAdminPassword) {
+        onResetAdminPassword();
+      }
+      if (onOpenAdminPortal) {
+        onOpenAdminPortal();
+      }
+      return;
+    }
+
+    const isAuthorized = isDefault
+      ? trimmedInput === 'admin' || trimmedInput === 'admin123'
+      : trimmedInput === masterPass;
+
+    if (isAuthorized) {
       triggerHaptic([30, 50]);
       playFeedbackSound('success');
       setShowAdminLoginModal(false);
@@ -105,7 +129,7 @@ export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
     } else {
       triggerHaptic([60, 80]);
       playFeedbackSound('error');
-      setAdminError('Invalid Admin Password. Please try again.');
+      setAdminError('Invalid Admin Password. (Forgot password? Use link below)');
     }
   };
 
@@ -120,11 +144,11 @@ export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
             <div className="absolute top-0 right-0 -mt-4 -mr-4 w-28 h-28 bg-white/10 rounded-full blur-xl pointer-events-none"></div>
             <div className="absolute bottom-0 left-0 -mb-4 -ml-4 w-24 h-24 bg-indigo-400/20 rounded-full blur-lg pointer-events-none"></div>
 
-            <div className="w-12 h-12 sm:w-14 sm:h-14 mx-auto mb-2 rounded-2xl overflow-hidden shadow-lg border-2 border-white/30 bg-slate-900 flex items-center justify-center">
-              <img src="/icon.svg" alt="RR Enterprises" className="w-full h-full object-cover" />
+            <div className="w-14 h-14 sm:w-16 sm:h-16 mx-auto mb-2 rounded-2xl overflow-hidden shadow-lg border-2 border-white/50 bg-white flex items-center justify-center p-1.5">
+              <img src="/icon.svg" alt="RR Enterprise" className="w-full h-full object-contain" />
             </div>
 
-            <h2 className="text-base sm:text-lg font-black tracking-tight">RR Enterprises</h2>
+            <h2 className="text-base sm:text-lg font-black tracking-tight">RR Enterprise</h2>
             <p className="text-[11px] sm:text-xs text-indigo-100/90 mt-0.5 max-w-xs mx-auto">
               Smart Meter Installation &amp; Electrical Work
             </p>
@@ -296,7 +320,7 @@ export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
                   setShowAdminLoginModal(true);
                 }
               }}
-              className="text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 border border-indigo-200 transition active:scale-95 cursor-pointer"
+              className="text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 border border-indigo-200 transition active:scale-95 cursor-pointer text-xs"
             >
               <Shield className="w-3.5 h-3.5 text-indigo-600" />
               <span>Admin Portal</span>
@@ -356,9 +380,29 @@ export const TechnicianLogin: React.FC<TechnicianLoginProps> = ({
                     autoFocus
                   />
                 </div>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Default: <code>admin</code>
-                </p>
+                <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
+                  <span>
+                    {settings.adminPassword && settings.adminPassword !== 'admin' ? (
+                      <span className="text-emerald-600 font-semibold">Custom Password Active</span>
+                    ) : (
+                      <span>Default: <code>admin</code></span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onResetAdminPassword) {
+                        onResetAdminPassword();
+                        setShowAdminLoginModal(false);
+                        setAdminPasswordInput('');
+                        if (onOpenAdminPortal) onOpenAdminPortal();
+                      }
+                    }}
+                    className="text-indigo-600 hover:text-indigo-800 hover:underline font-bold cursor-pointer"
+                  >
+                    Forgot password? (Reset to default)
+                  </button>
+                </div>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-1">

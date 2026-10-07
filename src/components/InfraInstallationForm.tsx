@@ -3,7 +3,7 @@ import { CloudUpload, Save, Loader2, RadioTower, AlertCircle, Sparkles, Lock } f
 import { InfraInstallationRecord, VerticalType } from '../types';
 import { PhotoUploader } from './PhotoUploader';
 import { getIndianTimestamp, areSerialsEqual } from '../utils/timestamp';
-import { triggerHaptic } from '../utils/storage';
+import { triggerHaptic, getInfraFormDraft, saveInfraFormDraft, clearInfraFormDraft } from '../utils/storage';
 
 interface InfraInstallationFormProps {
   onSubmit: (data: Omit<InfraInstallationRecord, 'id'>) => Promise<void>;
@@ -34,17 +34,48 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
   existingRecords = [],
   sheetExistingDeviceNos = [],
 }) => {
-  const [formData, setFormData] = useState({
-    technicianName: defaultTechnician || '',
-    company: '',
-    vertical: '' as VerticalType,
-    siteName: defaultSiteName || '',
-    towerNo: '',
-    deviceNo: '',
-    infraQty: '1',
-    devicePhoto: null as string | null,
-    remark: '',
+  const [formData, setFormData] = useState(() => {
+    const draft = getInfraFormDraft();
+    if (draft && typeof draft === 'object') {
+      return {
+        technicianName: defaultTechnician || draft.technicianName || '',
+        company: draft.company || '',
+        vertical: (draft.vertical || '') as VerticalType,
+        siteName: draft.siteName || defaultSiteName || '',
+        towerNo: draft.towerNo || '',
+        deviceNo: draft.deviceNo || '',
+        infraQty: draft.infraQty || '1',
+        devicePhoto: draft.devicePhoto || null,
+        remark: draft.remark || '',
+      };
+    }
+    return {
+      technicianName: defaultTechnician || '',
+      company: '',
+      vertical: '' as VerticalType,
+      siteName: defaultSiteName || '',
+      towerNo: '',
+      deviceNo: '',
+      infraQty: '1',
+      devicePhoto: null as string | null,
+      remark: '',
+    };
   });
+
+  // Auto-save draft on change (debounced 250ms to prevent main-thread freeze during typing or photo uploads)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveInfraFormDraft(formData);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [formData]);
+
+  // Flush draft immediately on unmount or beforeunload (e.g. when opening native camera)
+  useEffect(() => {
+    return () => {
+      saveInfraFormDraft(formData);
+    };
+  }, [formData]);
 
   const [isCustomCompany, setIsCustomCompany] = useState(false);
   const [customCompanyText, setCustomCompanyText] = useState('');
@@ -59,12 +90,12 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
   // Robust check for device serial / number duplicates (alphanumeric, numeric, or alphabetic)
   const rawDeviceNo = formData.deviceNo;
   const existingDeviceDuplicate = rawDeviceNo && String(rawDeviceNo).trim()
-    ? existingRecords.find((r) => areSerialsEqual(r.deviceNo, rawDeviceNo))
+    ? (existingRecords || []).find((r) => r && areSerialsEqual(r.deviceNo, rawDeviceNo))
     : undefined;
 
   const existsInGoogleSheet =
     rawDeviceNo && String(rawDeviceNo).trim() && !existingDeviceDuplicate
-      ? sheetExistingDeviceNos.some((no) => areSerialsEqual(no, rawDeviceNo))
+      ? (sheetExistingDeviceNos || []).some((no) => areSerialsEqual(no, rawDeviceNo))
       : false;
 
   const isDuplicateDevice = Boolean(existingDeviceDuplicate || existsInGoogleSheet);
@@ -109,7 +140,7 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validate()) {
+    if (!validate() || isDuplicateDevice) {
       triggerHaptic([40, 60, 40]);
       return;
     }
@@ -126,6 +157,9 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
       type: 'InfraInstallation',
       createdAt: Date.now(),
     });
+
+    // Clear saved draft on successful save
+    clearInfraFormDraft();
 
     // Reset inputs to clean blank state (technician stays locked if logged in)
     setFormData((prev) => ({
@@ -146,6 +180,12 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
   return (
     <form
       onSubmit={handleSubmit}
+      onKeyDown={(e) => {
+        // Prevent accidental form submit when pressing "Enter" on virtual mobile keyboard or barcode scanners
+        if (e.key === 'Enter' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+          e.preventDefault();
+        }
+      }}
       className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 sm:p-6 space-y-5"
     >
       {/* Clean Header */}
@@ -455,9 +495,11 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
         {/* Submit button */}
         <button
           type="submit"
-          disabled={isSubmitting}
-          className={`w-full py-3.5 px-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2.5 transition duration-200 active:scale-[0.99] disabled:opacity-60 cursor-pointer ${
-            isOnline
+          disabled={isSubmitting || isDuplicateDevice}
+          className={`w-full py-3.5 px-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2.5 transition duration-200 active:scale-[0.99] disabled:opacity-70 cursor-pointer ${
+            isDuplicateDevice
+              ? 'bg-rose-600 cursor-not-allowed shadow-rose-200'
+              : isOnline
               ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200 focus:ring-4 focus:ring-indigo-300'
               : 'bg-amber-600 hover:bg-amber-700 shadow-amber-200 focus:ring-4 focus:ring-amber-300'
           }`}
@@ -466,6 +508,11 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
             <>
               <Loader2 className="w-5 h-5 animate-spin" />
               <span>Processing Record...</span>
+            </>
+          ) : isDuplicateDevice ? (
+            <>
+              <AlertCircle className="w-5 h-5" />
+              <span>Duplicate Device - Cannot Submit</span>
             </>
           ) : isOnline ? (
             <>
