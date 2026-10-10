@@ -265,13 +265,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       !endDate &&
       !searchQuery.trim();
 
-    // 1. Total Meter Installation count
+    // 1. Total Meter Installation count (Exact match with Table and Graph)
     const localMeter = filteredRecords.filter((r) => isMeterRecord(r)).length;
     const totalMeter = isAllFiltersDefault && settings.sheetStats?.totalMeterInstall !== undefined
       ? settings.sheetStats.totalMeterInstall
       : localMeter;
 
-    // 2. Total Infra Installation: sum (infra Qty Col H)
+    // 2. Total Infra Installation: sum (infra Qty Col H) (Exact match with Table and Graph)
     const localInfraQty = filteredRecords.reduce((sum, r) => {
       if (isInfraRecord(r)) {
         return sum + parseInfraQty(r.infraQty);
@@ -279,7 +279,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       return sum;
     }, 0);
 
-    // If unfiltered, use live Google Sheet total
     const totalInfraQty = isAllFiltersDefault && settings.sheetStats?.totalInfraInstall !== undefined
       ? settings.sheetStats.totalInfraInstall
       : localInfraQty;
@@ -293,7 +292,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       return true;
     };
 
-    // 3. Today Meter count (Units)
+    // 3. Today Meter count (Units) (Exact match with Table and Graph)
     const localTodayMeter = history.filter((r) => {
       return matchBaseFilters(r) && isMeterRecord(r) && isRecordToday(r);
     }).length;
@@ -315,7 +314,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       meterDiffPercent = 100;
     }
 
-    // 4. Today Infra Qty (sum of Col H)
+    // 4. Today Infra Qty (sum of Col H) (Exact match with Table and Graph)
     const localTodayInfra = history.reduce((sum, r) => {
       if (matchBaseFilters(r) && isInfraRecord(r) && isRecordToday(r)) {
         return sum + parseInfraQty(r.infraQty);

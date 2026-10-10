@@ -18,6 +18,7 @@ interface InfraInstallationFormProps {
   onSiteNameChange?: (name: string) => void;
   existingRecords?: InfraInstallationRecord[];
   sheetExistingDeviceNos?: string[];
+  onDuplicateAttempt?: (serial: string, reason: string) => void;
 }
 
 export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
@@ -33,6 +34,7 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
   onSiteNameChange,
   existingRecords = [],
   sheetExistingDeviceNos = [],
+  onDuplicateAttempt,
 }) => {
   const [formData, setFormData] = useState(() => {
     const draft = getInfraFormDraft();
@@ -142,39 +144,53 @@ export const InfraInstallationForm: React.FC<InfraInstallationFormProps> = ({
     e.preventDefault();
     if (!validate() || isDuplicateDevice) {
       triggerHaptic([40, 60, 40]);
+      if (isDuplicateDevice) {
+        const reason = existsInGoogleSheet
+          ? `Device #${formData.deviceNo} pehle se Google Sheet me darj hai!`
+          : `Device #${formData.deviceNo} pehle se local system / history me darj hai!`;
+        if (onDuplicateAttempt) {
+          onDuplicateAttempt(formData.deviceNo, reason);
+        }
+        const deviceInput = document.getElementsByName('deviceNo')[0];
+        if (deviceInput) deviceInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
       return;
     }
 
     const finalCompany = isCustomCompany ? customCompanyText.trim() : formData.company;
     const preciseIndianTimestamp = getIndianTimestamp();
 
-    triggerHaptic(40);
-    await onSubmit({
-      ...formData,
-      company: finalCompany,
-      installationDate: preciseIndianTimestamp,
-      timestamp: preciseIndianTimestamp,
-      type: 'InfraInstallation',
-      createdAt: Date.now(),
-    });
+    try {
+      triggerHaptic(40);
+      await onSubmit({
+        ...formData,
+        company: finalCompany,
+        installationDate: preciseIndianTimestamp,
+        timestamp: preciseIndianTimestamp,
+        type: 'InfraInstallation',
+        createdAt: Date.now(),
+      });
 
-    // Clear saved draft on successful save
-    clearInfraFormDraft();
+      // Clear saved draft on successful save
+      clearInfraFormDraft();
 
-    // Reset inputs to clean blank state (technician stays locked if logged in)
-    setFormData((prev) => ({
-      technicianName: defaultTechnician || '',
-      company: '',
-      vertical: '' as VerticalType,
-      siteName: prev.siteName,
-      towerNo: '',
-      deviceNo: '',
-      infraQty: '1',
-      devicePhoto: null,
-      remark: '',
-    }));
-    setCustomCompanyText('');
-    setErrors({});
+      // Reset inputs to clean blank state (technician stays locked if logged in)
+      setFormData((prev) => ({
+        technicianName: defaultTechnician || '',
+        company: '',
+        vertical: '' as VerticalType,
+        siteName: prev.siteName,
+        towerNo: '',
+        deviceNo: '',
+        infraQty: '1',
+        devicePhoto: null,
+        remark: '',
+      }));
+      setCustomCompanyText('');
+      setErrors({});
+    } catch (err) {
+      console.error('Error submitting infra installation:', err);
+    }
   };
 
   return (

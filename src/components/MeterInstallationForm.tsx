@@ -23,6 +23,7 @@ interface MeterInstallationFormProps {
   hasColumnCData?: boolean;
   existingRecords?: MeterInstallationRecord[];
   sheetExistingMeterNos?: string[];
+  onDuplicateAttempt?: (serial: string, reason: string) => void;
 }
 
 export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
@@ -43,6 +44,7 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
   hasColumnCData = false,
   existingRecords = [],
   sheetExistingMeterNos = [],
+  onDuplicateAttempt,
 }) => {
   const [formData, setFormData] = useState(() => {
     const draft = getMeterFormDraft();
@@ -162,6 +164,16 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
     e.preventDefault();
     if (!validate() || isDuplicateMeter) {
       triggerHaptic([40, 60, 40]);
+      if (isDuplicateMeter) {
+        const reason = existsInGoogleSheet
+          ? `Meter #${formData.newMeterNo} pehle se Google Sheet me darj hai!`
+          : `Meter #${formData.newMeterNo} pehle se local system / history me darj hai!`;
+        if (onDuplicateAttempt) {
+          onDuplicateAttempt(formData.newMeterNo, reason);
+        }
+        const meterInput = document.getElementsByName('newMeterNo')[0];
+        if (meterInput) meterInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
       return;
     }
 
@@ -169,39 +181,43 @@ export const MeterInstallationForm: React.FC<MeterInstallationFormProps> = ({
     const finalCompany = isCustomCompany ? customCompanyText.trim() : formData.company;
     const preciseIndianTimestamp = getIndianTimestamp();
 
-    triggerHaptic(40);
-    await onSubmit({
-      ...formData,
-      company: finalCompany,
-      newMeterMake: finalMake,
-      installationDate: preciseIndianTimestamp,
-      timestamp: preciseIndianTimestamp,
-      type: 'MeterInstallation',
-      createdAt: Date.now(),
-    });
+    try {
+      triggerHaptic(40);
+      await onSubmit({
+        ...formData,
+        company: finalCompany,
+        newMeterMake: finalMake,
+        installationDate: preciseIndianTimestamp,
+        timestamp: preciseIndianTimestamp,
+        type: 'MeterInstallation',
+        createdAt: Date.now(),
+      });
 
-    // Clear saved draft on successful save
-    clearMeterFormDraft();
+      // Clear saved draft on successful save
+      clearMeterFormDraft();
 
-    // Reset inputs to clean blank state (technician stays locked if logged in)
-    setFormData((prev) => ({
-      technicianName: defaultTechnician || '',
-      company: '',
-      vertical: '' as VerticalType,
-      siteName: prev.siteName,
-      flatNo: '',
-      oldMeterNo: '',
-      oldMeterMake: '',
-      oldMeterPhoto: null,
-      newMeterNo: '',
-      newMeterMake: '',
-      newMeterPhoto: null,
-      remark: '',
-    }));
-    setCustomMakeText('');
-    setCustomCompanyText('');
-    setIsCustomMake(false);
-    setErrors({});
+      // Reset inputs to clean blank state (technician stays locked if logged in)
+      setFormData((prev) => ({
+        technicianName: defaultTechnician || '',
+        company: '',
+        vertical: '' as VerticalType,
+        siteName: prev.siteName,
+        flatNo: '',
+        oldMeterNo: '',
+        oldMeterMake: '',
+        oldMeterPhoto: null,
+        newMeterNo: '',
+        newMeterMake: '',
+        newMeterPhoto: null,
+        remark: '',
+      }));
+      setCustomMakeText('');
+      setCustomCompanyText('');
+      setIsCustomMake(false);
+      setErrors({});
+    } catch (err) {
+      console.error('Error submitting meter installation:', err);
+    }
   };
 
   return (

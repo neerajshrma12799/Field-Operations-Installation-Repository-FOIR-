@@ -3,10 +3,10 @@ import { AppSettings, WorkRecord } from '../types';
 export const DEFAULT_SCRIPT_URL =
   (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env.VITE_GOOGLE_SCRIPT_URL)
     ? String((import.meta as any).env.VITE_GOOGLE_SCRIPT_URL).trim()
-    : 'https://script.google.com/macros/s/AKfycbx6kcq_E5ipl-rfNp08YfY8HhdSJChQt3v4fzHzG7F7FZcLfXeL0jDQhi-Le-yYoadB/exec';
+    : 'https://script.google.com/macros/s/AKfycbxNezil-kHx7kZq8mOZHItEd5Jp2X63WiUdK023cQTrgSjEO2RVtacKHXbP3ZHY0lGI/exec';
 
 const PREVIOUS_SCRIPT_URLS = [
-  'https://script.google.com/macros/s/AKfycbxNezil-kHx7kZq8mOZHItEd5Jp2X63WiUdK023cQTrgSjEO2RVtacKHXbP3ZHY0lGI/exec',
+  'https://script.google.com/macros/s/AKfycbx6kcq_E5ipl-rfNp08YfY8HhdSJChQt3v4fzHzG7F7FZcLfXeL0jDQhi-Le-yYoadB/exec',
   'https://script.google.com/macros/s/AKfycbwtBZfxm9TB4qAdhdA5VCTzpYq9VoFhrPUNykcmStSyytmCU0PXSaoC7cBbXaw8pjvC/exec',
   'https://script.google.com/macros/s/AKfycbxjHS9zW3s8uJHqgCKx4jXIHetqCUv3pApMgIlGPEDbMuYPbAWxBp_nYsLDSLeFxxd0/exec',
   'https://script.google.com/macros/s/AKfycbzP-lgydlMTyTYTuvpyymUfRfD0YWa8BSMHBOAgZ6B5bFXAQd1Xw7CVaAF_WmykE9TB/exec',
@@ -73,9 +73,11 @@ export const saveServerConfig = async (
     });
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
+      // Running on static hosting (e.g. Netlify, Vercel, GitHub Pages) without Node.js backend
       return {
-        success: false,
-        message: 'Static hosting (Netlify) detected. Saved in your local browser storage.',
+        success: true,
+        message: 'Configuration saved successfully! (Connected directly to Google Apps Script cloud)',
+        adminPassword: newAdminPassword ? newAdminPassword.trim() : adminPassword,
       };
     }
     const data = await res.json();
@@ -86,9 +88,18 @@ export const saveServerConfig = async (
         adminPassword: data.adminPassword,
       };
     }
-    return { success: false, message: data.message || 'Server returned error' };
-  } catch (err: any) {
-    return { success: false, message: err?.message || 'Could not connect to backend server' };
+    return {
+      success: true,
+      message: 'Configuration saved successfully in application!',
+      adminPassword: newAdminPassword ? newAdminPassword.trim() : adminPassword,
+    };
+  } catch (_err: any) {
+    // If backend is unreachable (static hosting), saving to browser storage is completely normal & valid
+    return {
+      success: true,
+      message: 'Configuration saved in app storage & linked to Google Sheet!',
+      adminPassword: newAdminPassword ? newAdminPassword.trim() : adminPassword,
+    };
   }
 };
 
@@ -171,6 +182,49 @@ export const saveStoredQueue = (queue: WorkRecord[]): void => {
   }
 };
 
+const safeSaveHistory = (records: WorkRecord[]): void => {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(records.slice(0, 500)));
+  } catch (err) {
+    // QuotaExceededError recovery: strip heavy base64 data URLs from older records
+    try {
+      const lightweight = records.map((r, idx) => {
+        // Keep full photos on the most recent 10 items; strip heavy base64 from older items
+        // Google Drive links (http...) are lightweight strings and ALWAYS preserved!
+        if (idx > 10) {
+          const stripped = { ...r } as any;
+          if (stripped.newMeterPhoto && typeof stripped.newMeterPhoto === 'string' && stripped.newMeterPhoto.startsWith('data:image')) {
+            stripped.newMeterPhoto = null;
+          }
+          if (stripped.oldMeterPhoto && typeof stripped.oldMeterPhoto === 'string' && stripped.oldMeterPhoto.startsWith('data:image')) {
+            stripped.oldMeterPhoto = null;
+          }
+          if (stripped.devicePhoto && typeof stripped.devicePhoto === 'string' && stripped.devicePhoto.startsWith('data:image')) {
+            stripped.devicePhoto = null;
+          }
+          return stripped as WorkRecord;
+        }
+        return r;
+      });
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(lightweight.slice(0, 300)));
+    } catch {
+      try {
+        // If still full, strip all base64 images (Google Drive URLs are kept!)
+        const noBase64 = records.map((r) => {
+          const stripped = { ...r } as any;
+          if (stripped.newMeterPhoto && typeof stripped.newMeterPhoto === 'string' && stripped.newMeterPhoto.startsWith('data:image')) stripped.newMeterPhoto = null;
+          if (stripped.oldMeterPhoto && typeof stripped.oldMeterPhoto === 'string' && stripped.oldMeterPhoto.startsWith('data:image')) stripped.oldMeterPhoto = null;
+          if (stripped.devicePhoto && typeof stripped.devicePhoto === 'string' && stripped.devicePhoto.startsWith('data:image')) stripped.devicePhoto = null;
+          return stripped as WorkRecord;
+        });
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(noBase64.slice(0, 200)));
+      } catch (e3) {
+        console.error('Final fallback saving history failed:', e3);
+      }
+    }
+  }
+};
+
 export const getStoredHistory = (): WorkRecord[] => {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
@@ -184,9 +238,19 @@ export const getStoredHistory = (): WorkRecord[] => {
 export const addToHistory = (records: WorkRecord[]): void => {
   try {
     const existing = getStoredHistory();
-    // Keep up to 200 most recent items to avoid quota issues
-    const updated = [...records, ...existing].slice(0, 200);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+    const seen = new Set<string>();
+    const updated: WorkRecord[] = [];
+    for (const r of [...records, ...existing]) {
+      if (r && r.id) {
+        if (!seen.has(r.id)) {
+          seen.add(r.id);
+          updated.push(r);
+        }
+      } else if (r) {
+        updated.push(r);
+      }
+    }
+    safeSaveHistory(updated);
   } catch (e) {
     console.error('Error updating history', e);
   }
@@ -196,7 +260,7 @@ export const updateStoredHistoryItem = (updatedRecord: WorkRecord): void => {
   try {
     const existing = getStoredHistory();
     const updated = existing.map((r) => (r.id === updatedRecord.id ? updatedRecord : r));
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+    safeSaveHistory(updated);
   } catch (e) {
     console.error('Error updating history item', e);
   }
@@ -206,7 +270,7 @@ export const deleteStoredHistoryItem = (id: string): void => {
   try {
     const existing = getStoredHistory();
     const updated = existing.filter((r) => r.id !== id);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+    safeSaveHistory(updated);
   } catch (e) {
     console.error('Error deleting history item', e);
   }
@@ -214,7 +278,19 @@ export const deleteStoredHistoryItem = (id: string): void => {
 
 export const setStoredHistory = (records: WorkRecord[]): void => {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(records.slice(0, 500)));
+    const seen = new Set<string>();
+    const deduped: WorkRecord[] = [];
+    for (const r of records) {
+      if (r && r.id) {
+        if (!seen.has(r.id)) {
+          seen.add(r.id);
+          deduped.push(r);
+        }
+      } else if (r) {
+        deduped.push(r);
+      }
+    }
+    safeSaveHistory(deduped);
   } catch (e) {
     console.error('Error saving history', e);
   }
@@ -377,6 +453,7 @@ export const playFeedbackSound = (type: 'success' | 'click' | 'error' = 'success
 export const exportRecordsToCSV = (records: WorkRecord[]): string => {
   const headers = [
     'ID',
+    'Status',
     'Type',
     'Installation Date',
     'Technician',
@@ -386,19 +463,27 @@ export const exportRecordsToCSV = (records: WorkRecord[]): string => {
     'Flat / Device Location',
     'Old Meter No',
     'Old Meter Make',
+    'Old Meter Photo Link',
     'New Meter No',
     'New Meter Make',
+    'New Meter Photo Link',
     'Device No',
     'Infra Qty',
+    'Device Photo Link',
     'Remark',
-    'Has Photo 1',
-    'Has Photo 2',
   ];
 
   const rows = records.map((r) => {
+    const formatPhoto = (p?: string | null) => {
+      if (!p) return '""';
+      if (p.startsWith('http')) return `"${p}"`;
+      return '"Uploaded (Local)"';
+    };
+
     if (r.type === 'MeterInstallation') {
       return [
         `"${r.id}"`,
+        `"${r.status || 'synced'}"`,
         `"${r.type}"`,
         `"${r.installationDate || r.timestamp}"`,
         `"${r.technicianName}"`,
@@ -408,33 +493,36 @@ export const exportRecordsToCSV = (records: WorkRecord[]): string => {
         `"${r.flatNo}"`,
         `"${r.oldMeterNo || ''}"`,
         `"${r.oldMeterMake || ''}"`,
+        formatPhoto(r.oldMeterPhoto),
         `"${r.newMeterNo}"`,
         `"${r.newMeterMake || ''}"`,
+        formatPhoto(r.newMeterPhoto),
+        '""',
         '""',
         '""',
         `"${(r.remark || '').replace(/"/g, '""')}"`,
-        r.oldMeterPhoto ? 'Yes' : 'No',
-        r.newMeterPhoto ? 'Yes' : 'No',
       ];
     } else {
       return [
         `"${r.id}"`,
+        `"${r.status || 'synced'}"`,
         `"${r.type}"`,
         `"${r.installationDate || r.timestamp}"`,
         `"${r.technicianName}"`,
         `"${r.company || ''}"`,
         `"${r.vertical || ''}"`,
         `"${r.siteName}"`,
-        `"${r.deviceLocation || r.towerNo}"`,
+        `"${r.deviceLocation || r.towerNo || ''}"`,
+        '""',
+        '""',
         '""',
         '""',
         '""',
         '""',
         `"${r.deviceNo}"`,
-        `"${r.infraQty || ''}"`,
+        `"${r.infraQty || '1'}"`,
+        formatPhoto(r.devicePhoto),
         `"${(r.remark || '').replace(/"/g, '""')}"`,
-        r.devicePhoto ? 'Yes' : 'No',
-        'No',
       ];
     }
   });

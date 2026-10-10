@@ -14,6 +14,7 @@ import {
   Clock,
   MapPin,
   User,
+  ShieldCheck,
 } from 'lucide-react';
 import { WorkRecord } from '../types';
 import { exportRecordsToCSV, triggerHaptic } from '../utils/storage';
@@ -25,9 +26,10 @@ interface QueueManagerProps {
   onSync: () => Promise<void>;
   onReconcile?: () => Promise<void> | void;
   onImportQueue?: (records: WorkRecord[]) => void;
-  onDeleteItem: (id: string) => void;
-  onClearQueue: () => void;
+  onDeleteItem: (id: string) => Promise<void> | void;
+  onClearQueue: () => Promise<void> | void;
   onPreviewPhoto: (url: string, title: string) => void;
+  processingItemId?: string | null;
 }
 
 export const QueueManager: React.FC<QueueManagerProps> = ({
@@ -40,6 +42,7 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
   onDeleteItem,
   onClearQueue,
   onPreviewPhoto,
+  processingItemId = null,
 }) => {
   const [selectedRecord, setSelectedRecord] = useState<WorkRecord | null>(null);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
@@ -141,11 +144,15 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
                 type="button"
                 onClick={handleManualReconcile}
                 disabled={isReconciling || isSyncing}
-                className="px-3 py-2.5 rounded-xl font-medium text-xs border border-slate-200 text-slate-700 bg-slate-50 hover:bg-slate-100 flex items-center gap-1.5 transition active:scale-95 cursor-pointer shadow-xs"
-                title="Check if any queued records are already recorded in Google Sheet and clear them"
+                className="px-3.5 py-2.5 rounded-xl font-medium text-xs border border-indigo-200 text-indigo-700 bg-indigo-50/80 hover:bg-indigo-100/90 flex items-center gap-1.5 transition active:scale-95 cursor-pointer shadow-xs"
+                title="Google Sheet me check kare ki kya ID ya Serial pehle se save ho chuka hai, aur double entry se bachne ke liye queue se clear kare"
               >
-                <Loader2 className={`w-3.5 h-3.5 ${isReconciling ? 'animate-spin text-indigo-600' : 'text-slate-500'}`} />
-                <span>{isReconciling ? 'Checking Sheet...' : 'Check Sheet'}</span>
+                {isReconciling ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                ) : (
+                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                )}
+                <span>{isReconciling ? 'Checking Sheet...' : 'Check Sheet (Anti-Duplicate)'}</span>
               </button>
             )}
 
@@ -340,10 +347,15 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
                     <button
                       type="button"
                       onClick={() => onDeleteItem(item.id)}
-                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                      title="Delete from queue"
+                      disabled={processingItemId === item.id}
+                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer disabled:opacity-50"
+                      title="Google Sheet me check karke delete ya save karein"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      {processingItemId === item.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
                     </button>
                   </div>
                 </div>

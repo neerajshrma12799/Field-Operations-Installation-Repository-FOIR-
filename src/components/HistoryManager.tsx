@@ -19,6 +19,12 @@ import {
   Layers,
   Sparkles,
   AlertTriangle,
+  RefreshCw,
+  AlertCircle,
+  Users,
+  User,
+  Download,
+  ShieldCheck,
 } from 'lucide-react';
 import { WorkRecord, MeterInstallationRecord, InfraInstallationRecord } from '../types';
 import { exportRecordsToCSV, triggerHaptic } from '../utils/storage';
@@ -35,20 +41,32 @@ import {
 
 interface HistoryManagerProps {
   history: WorkRecord[];
+  queue?: WorkRecord[];
   currentUser?: string | null;
   onClearHistory: () => void;
   onUpdateItem?: (record: WorkRecord) => void;
   onDeleteItem?: (id: string) => void;
   onPreviewPhoto: (url: string, title: string) => void;
+  onTriggerSync?: () => void;
+  onReQueueItem?: (record: WorkRecord) => void;
+  isSyncing?: boolean;
+  sheetExistingMeterNos?: string[];
+  sheetExistingDeviceNos?: string[];
 }
 
 export const HistoryManager: React.FC<HistoryManagerProps> = ({
   history,
+  queue = [],
   currentUser,
   onClearHistory,
   onUpdateItem,
   onDeleteItem,
   onPreviewPhoto,
+  onTriggerSync,
+  onReQueueItem,
+  isSyncing = false,
+  sheetExistingMeterNos = [],
+  sheetExistingDeviceNos = [],
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'meter' | 'infra'>('all');
@@ -60,13 +78,14 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
     return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
   };
 
-  const [startDate, setStartDate] = useState<string>(() => getTodayYMD());
-  const [endDate, setEndDate] = useState<string>(() => getTodayYMD());
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
   const [showDateRangeFilter, setShowDateRangeFilter] = useState(false);
 
   // Edit / Modify Modal State
   const [editingItem, setEditingItem] = useState<WorkRecord | null>(null);
   const [editFormData, setEditFormData] = useState<Record<string, string>>({});
+  const [editError, setEditError] = useState<string | null>(null);
 
   // Delete Confirmation State
   const [itemToDelete, setItemToDelete] = useState<WorkRecord | null>(null);
@@ -108,11 +127,11 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
   };
 
   const filteredHistory = history.filter((item) => {
-    // 1. Strictly show logged-in technician's records (match if present)
+    // 1. Strict Technician Isolation: A technician can ONLY see and download their own records!
     if (currentUser) {
-      const itemTech = item.technicianName?.trim().toLowerCase();
+      const itemTech = (item.technicianName || '').trim().toLowerCase();
       const currentTech = currentUser.trim().toLowerCase();
-      if (itemTech && itemTech !== currentTech) {
+      if (!itemTech || itemTech !== currentTech) {
         return false;
       }
     }
@@ -164,15 +183,24 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
 
   const handleExportCSV = () => {
     triggerHaptic(30);
-    const csv = exportRecordsToCSV(filteredHistory);
+    // Strictly isolate data: Technician can ONLY download their own records!
+    let recordsToExport = filteredHistory;
+    if (currentUser) {
+      const cleanUser = currentUser.trim().toLowerCase();
+      recordsToExport = recordsToExport.filter(
+        (r) => r.technicianName?.trim().toLowerCase() === cleanUser
+      );
+    }
+    if (recordsToExport.length === 0) return;
+    const csv = exportRecordsToCSV(recordsToExport);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
 
-    const techPrefix = currentUser ? `${currentUser.replace(/\s+/g, '_')}_` : '';
-    const dateRangeSuffix = startDate || endDate ? `_${startDate || 'start'}_to_${endDate || 'now'}` : '';
-    link.setAttribute('download', `${techPrefix}work_records${dateRangeSuffix}_${Date.now()}.csv`);
+    const prefix = currentUser ? `${currentUser.replace(/\s+/g, '_')}_` : 'my_';
+    const dateRangeSuffix = startDate || endDate ? `_${startDate || 'start'}_to_${endDate || 'now'}` : '_all';
+    link.setAttribute('download', `${prefix}installation_report${dateRangeSuffix}_${Date.now()}.csv`);
 
     document.body.appendChild(link);
     link.click();
@@ -210,16 +238,24 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingItem || !onUpdateItem) return;
+    setEditError(null);
 
     if (editingItem.type === 'MeterInstallation') {
       const targetMeterNo = editFormData.newMeterNo || (editingItem as MeterInstallationRecord).newMeterNo;
       if (targetMeterNo) {
-        const isMeterDup = history.some(
+        const isHistDup = history.some(
           (r) => r.id !== editingItem.id && r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, targetMeterNo)
         );
-        if (isMeterDup) {
+        const isQueueDup = queue.some(
+          (r) => r.id !== editingItem.id && r.type === 'MeterInstallation' && areSerialsEqual((r as any).newMeterNo, targetMeterNo)
+        );
+        const isSheetDup = sheetExistingMeterNos.some(
+          (no) => areSerialsEqual(no, targetMeterNo) && !areSerialsEqual((editingItem as MeterInstallationRecord).newMeterNo, targetMeterNo)
+        );
+
+        if (isHistDup || isQueueDup || isSheetDup) {
           triggerHaptic([50, 100, 50]);
-          alert(`Duplicate: Meter #${targetMeterNo} already exists on another record!`);
+          setEditError(`Duplicate Entry: Meter #${targetMeterNo} already exists in Google Sheet / Records! Duplicate not allowed.`);
           return;
         }
       }
@@ -241,12 +277,19 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
     } else {
       const targetDevNo = editFormData.deviceNo || (editingItem as InfraInstallationRecord).deviceNo;
       if (targetDevNo) {
-        const isDevDup = history.some(
+        const isHistDup = history.some(
           (r) => r.id !== editingItem.id && r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, targetDevNo)
         );
-        if (isDevDup) {
+        const isQueueDup = queue.some(
+          (r) => r.id !== editingItem.id && r.type === 'InfraInstallation' && areSerialsEqual((r as any).deviceNo, targetDevNo)
+        );
+        const isSheetDup = sheetExistingDeviceNos.some(
+          (no) => areSerialsEqual(no, targetDevNo) && !areSerialsEqual((editingItem as InfraInstallationRecord).deviceNo, targetDevNo)
+        );
+
+        if (isHistDup || isQueueDup || isSheetDup) {
           triggerHaptic([50, 100, 50]);
-          alert(`Duplicate: Device #${targetDevNo} already exists on another record!`);
+          setEditError(`Duplicate Entry: Device #${targetDevNo} already exists in Google Sheet / Records! Duplicate not allowed.`);
           return;
         }
       }
@@ -267,6 +310,7 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
     }
 
     setEditingItem(null);
+    setEditError(null);
   };
 
   const confirmDelete = () => {
@@ -316,71 +360,92 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
       {/* Top Header Card */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
+          <div className="space-y-1.5">
             <div className="flex items-center gap-2">
               <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
                 <History className="w-5 h-5" />
               </div>
               <div>
                 <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                  My Work History
+                  <span>My Work History</span>
                   <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800">
                     {filteredHistory.length}
                   </span>
                 </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Logged in as <strong className="text-indigo-700">{currentUser || 'Technician'}</strong>
-                  {isTodayActive ? " • Today's Verified Work Log" : ' • Filtered Records'}
+                <p className="text-xs text-slate-500">
+                  Logged in as <strong className="text-indigo-700">{currentUser || 'Technician'}</strong> &bull; Only your personal installations
                 </p>
               </div>
             </div>
 
             {/* Quick Metrics Bar: Meter Count & Infra Qty Sum */}
-            <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200">
                 Meters: <strong>{stats.meters}</strong>
               </span>
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Infra Qty: <strong>{stats.infraQtySum}</strong> (sum)
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">
+                Infra Qty: <strong>{stats.infraQtySum}</strong>
               </span>
               {stats.todayCombined > 0 && (
-                <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200">
+                <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">
                   Today: <strong>{stats.todayMeters}</strong> M + <strong>{stats.todayInfraQtySum}</strong> I
                 </span>
               )}
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700">
                 Total Output: <strong>{stats.totalCombined}</strong>
               </span>
             </div>
           </div>
 
+          {/* Action / Download Buttons */}
           <div className="flex items-center gap-2">
-            {filteredHistory.length > 0 && (
+            {filteredHistory.length > 0 ? (
               <button
                 type="button"
                 onClick={handleExportCSV}
-                className="px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl flex items-center gap-1.5 transition active:scale-95"
+                className="px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl flex items-center gap-1.5 transition active:scale-95 shadow-sm cursor-pointer"
+                title={`Download only ${currentUser || 'your'} personal installation records`}
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                Export CSV
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Download My Report ({currentUser ? `${currentUser}: ` : ''}{filteredHistory.length} Records)</span>
               </button>
+            ) : (
+              <span className="text-[11px] font-medium text-slate-400 px-3 py-1.5 bg-slate-100 rounded-xl">
+                No personal records to download
+              </span>
             )}
 
-            {history.length > 0 && (
+            {filteredHistory.length > 0 && (
               <button
                 type="button"
                 onClick={() => {
-                  if (window.confirm('Clear all local history logs? (Online Google Sheet data will not be affected)')) {
+                  if (window.confirm('Clear your local history logs from phone? (Online Google Sheet data will not be affected)')) {
                     onClearHistory();
                   }
                 }}
-                className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition"
-                title="Clear all local history"
+                className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
+                title="Clear local device cache"
               >
                 <Trash2 className="w-4 h-4" />
               </button>
             )}
           </div>
+        </div>
+
+        {/* Personal Privacy & Download Notice */}
+        <div className="flex items-center gap-2 px-3 py-2 bg-emerald-50/90 border border-emerald-200/80 rounded-xl text-[11px] text-emerald-800">
+          <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>
+            {currentUser ? (
+              <>
+                <strong>Private Technician View:</strong> Aap sirf apna (<strong>{currentUser}</strong>) data dekh aur download kar sakte hain ({filteredHistory.length} records). Dusre kisi technician ka data yaha na dikhega na download hoga.
+              </>
+            ) : (
+              <>
+                <strong>Notice:</strong> Sirf apna data dekhne aur download karne ke liye apna technician name select karein.
+              </>
+            )}
+          </span>
         </div>
 
         {/* Search & Filter Toolbar */}
@@ -532,6 +597,46 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
       </div>
 
       {/* Record List */}
+      {/* 0. Low Connectivity / Pending Sync Banner */}
+      {(() => {
+        const pendingRecordsCount = history.filter(
+          (h) => h.status === 'pending' || queue.some((q) => q.id === h.id)
+        ).length;
+        if (pendingRecordsCount === 0) return null;
+        return (
+          <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-300 rounded-2xl text-xs text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-950 flex items-center gap-1.5 flex-wrap">
+                  <span>{pendingRecordsCount} Record(s) Pending Google Sheet Sync</span>
+                  <span className="text-[10px] px-1.5 py-0.5 bg-amber-200 text-amber-900 rounded font-bold">
+                    Saved in Device Memory
+                  </span>
+                </p>
+                <p className="text-[11px] text-amber-800 leading-relaxed mt-0.5">
+                  Ye entries aapke phone me surakshit save hain. Low network ya connectivity disconnect hone ki wajah se Google Sheet tak nahi pahunchi thin. Internet aate hi sync karein:
+                </p>
+              </div>
+            </div>
+            {onTriggerSync && (
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHaptic(30);
+                  onTriggerSync();
+                }}
+                disabled={isSyncing}
+                className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition shadow-xs shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{isSyncing ? 'Syncing to Sheet...' : 'Sync All to Google Sheet ⚡'}</span>
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
       {filteredHistory.length === 0 ? (
         <div className="bg-white rounded-2xl p-8 text-center border border-slate-200/80 shadow-sm space-y-2">
           <div className="w-14 h-14 mx-auto rounded-full bg-slate-100 text-slate-400 flex items-center justify-center">
@@ -541,33 +646,37 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
             {isTodayActive ? "No Work Records for Today Yet" : "No Records Found"}
           </h3>
           <p className="text-xs text-slate-500 max-w-sm mx-auto">
-            {isTodayActive
-              ? "Aaj aapne jo installations verify kiye hain woh yahan show honge. Purana data dekhne ke liye 'All Days' ya 'Custom Date' select karein."
+            {currentUser
+              ? `${currentUser} ke naam par abhi koi record match nahi hua. Jab aap Meter ya Infra install karke submit karenge, to aapka personal record yahan show hoga aur aap apna report download kar sakenge.`
               : "Selected date range ya filter ke sath koi record match nahi hua."}
           </p>
-          {history.length > 0 && (
+          {(startDate || endDate) && (
             <div className="pt-2">
               <button
                 type="button"
                 onClick={() => setDatePreset('all')}
                 className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold rounded-xl border border-indigo-200 transition cursor-pointer shadow-xs inline-flex items-center gap-1.5"
               >
-                <span>Show All Days ({history.length} Total Records)</span>
+                <span>Clear Date Filter (Show All Days)</span>
               </button>
             </div>
           )}
+
         </div>
       ) : (
         <div className="space-y-3.5">
           {filteredHistory.map((item, index) => {
             const isMeter = item.type === 'MeterInstallation';
+            const isPending = item.status === 'pending' || queue.some((q) => q.id === item.id);
             return (
               <div
                 key={item.id || index}
-                className="bg-white rounded-2xl border border-slate-200/90 shadow-sm hover:shadow-md transition overflow-hidden"
+                className={`bg-white rounded-2xl border ${
+                  isPending ? 'border-amber-300 ring-2 ring-amber-100 shadow-amber-50/50' : 'border-slate-200/90'
+                } shadow-sm hover:shadow-md transition overflow-hidden`}
               >
                 {/* 1. Header Bar: Type, Badges & Action Buttons */}
-                <div className="bg-slate-50/80 border-b border-slate-100 px-3.5 py-2.5 flex items-center justify-between gap-2">
+                <div className={`${isPending ? 'bg-amber-50/70 border-b border-amber-200/80' : 'bg-slate-50/80 border-b border-slate-100'} px-3.5 py-2.5 flex items-center justify-between gap-2`}>
                   <div className="flex items-center gap-2 flex-wrap">
                     <div
                       className={`p-1.5 rounded-lg shrink-0 ${
@@ -589,9 +698,48 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
                         {item.vertical}
                       </span>
                     )}
-                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-0.5">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Synced
-                    </span>
+                    {isPending ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 shadow-2xs">
+                          <Clock className="w-3 h-3 text-amber-700 animate-pulse" />
+                          <span>Pending Sync (Saved in Device)</span>
+                        </span>
+                        {onTriggerSync && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              triggerHaptic(20);
+                              onTriggerSync();
+                            }}
+                            disabled={isSyncing}
+                            className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-bold flex items-center gap-1 shadow-2xs active:scale-95 transition cursor-pointer disabled:opacity-50"
+                            title="Sync this record to Google Sheet now"
+                          >
+                            <RefreshCw className={`w-2.5 h-2.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                            <span>Sync Now</span>
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-0.5">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Synced to Sheet
+                        </span>
+                        {onReQueueItem && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              triggerHaptic(20);
+                              onReQueueItem(item);
+                            }}
+                            className="text-[10px] text-slate-500 hover:text-indigo-600 hover:underline px-1 py-0.5 cursor-pointer font-medium"
+                            title="Agar low network ki wajah se Google Sheet me entry miss ho gayi ho, to dubara sync karein"
+                          >
+                            Re-sync to Sheet
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Top Right Action Buttons: Modify & Delete */}
@@ -833,6 +981,13 @@ export const HistoryManager: React.FC<HistoryManagerProps> = ({
             </div>
 
             <form onSubmit={handleSaveEdit} className="p-4 sm:p-5 space-y-3.5">
+              {editError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2 text-xs font-semibold text-rose-700 animate-in fade-in">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span className="flex-1">{editError}</span>
+                </div>
+              )}
+
               {/* Site Name */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">

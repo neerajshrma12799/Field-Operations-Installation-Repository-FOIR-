@@ -238,12 +238,14 @@ export const isInfraRecord = (r: any): r is InfraInstallationRecord => {
 
 /**
  * Safely parse numeric Infra Qty (Column H in Infra sheet)
- * Sums the number, defaulting to 1 if empty or non-numeric
+ * Correctly handles numbers, strings with units (e.g. "10 Nos"), and preserves 0
  */
 export const parseInfraQty = (val: any): number => {
   if (val === undefined || val === null || val === '') return 1;
-  const num = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
-  return isNaN(num) || num <= 0 ? 1 : num;
+  const str = String(val).trim();
+  if (str === '0') return 0;
+  const num = parseFloat(str.replace(/[^0-9.-]/g, ''));
+  return isNaN(num) ? 1 : Math.max(0, num);
 };
 
 /**
@@ -269,16 +271,28 @@ export const areSerialsEqual = (a: any, b: any): boolean => {
   // 1. Direct match (case-insensitive & trimmed)
   if (normA === normB) return true;
 
-  // 2. Alphanumeric match ignoring hyphens, underscores, dots and spaces
-  // e.g. "A-379" matches "A379" and "a 379"
+  // 2. Alphanumeric match ignoring hyphens (-, –, —), underscores, dots, slashes, and spaces
+  // e.g. "A-379" matches "A379", "a 379", "A–379"
   const cleanA = normA.replace(/[^A-Z0-9]/g, '');
   const cleanB = normB.replace(/[^A-Z0-9]/g, '');
   if (cleanA && cleanB && cleanA === cleanB) return true;
 
   // 3. Numeric match with leading zeroes if both are pure numbers
-  // e.g. "012345" matches "12345"
-  if (/^\d+$/.test(normA) && /^\d+$/.test(normB)) {
-    return parseInt(normA, 10) === parseInt(normB, 10);
+  // e.g. "012345" matches "12345" or "00012345"
+  if (/^\d+$/.test(cleanA) && /^\d+$/.test(cleanB)) {
+    const numA = cleanA.replace(/^0+/, '') || '0';
+    const numB = cleanB.replace(/^0+/, '') || '0';
+    if (numA === numB) return true;
+  }
+
+  // 4. Alphanumeric prefix + number zero-padding match
+  // e.g. "M-00123" matches "M-123" or "m123"
+  const alphaA = cleanA.replace(/[0-9]/g, '');
+  const alphaB = cleanB.replace(/[0-9]/g, '');
+  const digitsA = (cleanA.replace(/[^0-9]/g, '')).replace(/^0+/, '') || '0';
+  const digitsB = (cleanB.replace(/[^0-9]/g, '')).replace(/^0+/, '') || '0';
+  if (alphaA && alphaB && alphaA === alphaB && digitsA === digitsB) {
+    return true;
   }
 
   return false;

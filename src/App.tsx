@@ -36,8 +36,10 @@ import { TechnicianLogin } from './components/TechnicianLogin';
 import { TechnicianDataExportModal } from './components/TechnicianDataExportModal';
 import { AdminPortal } from './components/AdminPortal';
 import { AdminAuthModal } from './components/AdminAuthModal';
+import { DuplicateAlertModal, DuplicateNoticeData } from './components/DuplicateAlertModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
+  DEFAULT_SCRIPT_URL,
   getStoredQueue,
   saveStoredQueue,
   getStoredHistory,
@@ -59,7 +61,7 @@ import {
   triggerHaptic,
   playFeedbackSound,
 } from './utils/storage';
-import { areSerialsEqual } from './utils/timestamp';
+import { areSerialsEqual, normalizeSerial, isMeterRecord, isInfraRecord, parseInfraQty, isRecordToday } from './utils/timestamp';
 
 export default function App() {
   const isOnline = useOnlineStatus();
@@ -79,6 +81,16 @@ export default function App() {
     null
   );
   const [previewPhoto, setPreviewPhoto] = useState<{ url: string; title: string } | null>(null);
+  const [duplicateNotice, setDuplicateNotice] = useState<DuplicateNoticeData | null>(null);
+  const [backgroundUploads, setBackgroundUploads] = useState<{
+    id: string;
+    serial: string;
+    label: string;
+    record: WorkRecord;
+    status: 'uploading' | 'synced' | 'failed';
+    startedAt: number;
+  }[]>([]);
+  const [processingQueueId, setProcessingQueueId] = useState<string | null>(null);
 
   const [currentUser, setCurrentUser] = useState<string | null>(getLoggedInTechnician);
   const [lastSiteName, setLastSiteName] = useState('');
@@ -97,6 +109,7 @@ export default function App() {
   }, []);
 
   const syncLockRef = useRef(false);
+  const inFlightSyncIdsRef = useRef<Set<string>>(new Set());
   const lastFormTabRef = useRef<'meter' | 'infra'>('meter');
   useEffect(() => {
     if (activeTab === 'meter' || activeTab === 'infra') {
@@ -215,9 +228,19 @@ export default function App() {
       try {
         data = JSON.parse(rawText);
       } catch {
-        if (rawText.includes('<!DOCTYPE') || rawText.includes('<html')) {
+        if (rawText.includes('<!DOCTYPE') || rawText.includes('<html') || rawText.includes('Page not found')) {
+          if (currentUrl !== DEFAULT_SCRIPT_URL) {
+            console.warn('Configured script URL failed with Google HTML page, falling back to verified working URL');
+            setSettings((prev) => {
+              const upd = { ...prev, scriptUrl: DEFAULT_SCRIPT_URL };
+              saveStoredSettings(upd);
+              return upd;
+            });
+            setTimeout(() => fetchRemoteTechnicians(DEFAULT_SCRIPT_URL, false), 200);
+            return;
+          }
           if (isManual) {
-            showToast('Google Sign-in page received! Make sure "Who has access: Anyone" is selected in Apps Script Deploy.', 'warning');
+            showToast('Google Apps Script access issue: Make sure "Who has access: Anyone" is selected in Deploy.', 'warning');
           }
           return;
         }
@@ -276,6 +299,18 @@ export default function App() {
               totalInfraInstall: Number(data.sheetStats.totalInfraInstall) || 0,
               todayInfraInstall: Number(data.sheetStats.todayInfraInstall) || 0,
             };
+          } else if (Array.isArray(data.sheetRecords) && data.sheetRecords.length > 0) {
+            // Auto-calculate sheetStats accurately from sheetRecords
+            const mRecs = data.sheetRecords.filter((r: any) => isMeterRecord(r));
+            const iRecs = data.sheetRecords.filter((r: any) => isInfraRecord(r));
+            const iTotalQty = iRecs.reduce((sum: number, r: any) => sum + parseInfraQty(r.infraQty), 0);
+            const iTodayQty = iRecs.filter((r: any) => isRecordToday(r)).reduce((sum: number, r: any) => sum + parseInfraQty(r.infraQty), 0);
+            updated.sheetStats = {
+              totalMeterInstall: mRecs.length,
+              todayMeterInstall: mRecs.filter((r: any) => isRecordToday(r)).length,
+              totalInfraInstall: iTotalQty,
+              todayInfraInstall: iTodayQty,
+            };
           }
 
           // Column B: Passwords
@@ -308,109 +343,116 @@ export default function App() {
           return updated;
         });
 
-        // Sync remote records from Google Sheets into local history (Google Sheet is source of truth)
+        // Sync remote records from Google Sheets into local history accurately (Google Sheet is source of truth)
         if (Array.isArray(data.sheetRecords)) {
           const currentHist = getStoredHistory();
-          // Keep only local records that are still pending sync (offline)
-          const pendingLocalRecords = currentHist.filter((r) => r.status === 'pending');
-
-          const histMap = new Map<string, WorkRecord>();
-
-          const getRecKey = (r: any) => {
-            if (r.id && String(r.id).trim()) {
-              return String(r.id).trim();
-            }
-            const type = r.type || 'rec';
-            const num = r.newMeterNo || r.deviceNo || '';
-            const ts = r.timestamp || r.installationDate || '';
-            const site = r.siteName || '';
-            const tech = r.technicianName || '';
-            const loc = r.flatNo || r.towerNo || r.deviceLocation || '';
-            return `${type}___${num}___${ts}___${site}___${tech}___${loc}`;
-          };
-
-          // 1. Live records from Google Sheet
-          data.sheetRecords.forEach((remoteRec: WorkRecord) => {
-            histMap.set(getRecKey(remoteRec), { ...remoteRec, status: 'synced' });
-          });
-
-          // 2. Add local offline un-synced records
-          pendingLocalRecords.forEach((r) => {
-            histMap.set(getRecKey(r), r);
-          });
-
-          const syncedHistory = Array.from(histMap.values());
-          setStoredHistory(syncedHistory);
-          setHistory(syncedHistory);
-
-          // 3. Auto-reconcile local offline queue against freshly fetched Google Sheet data
           const currentQueue = getStoredQueue();
-          if (currentQueue.length > 0) {
-            const remoteRecords = Array.isArray(data.sheetRecords) ? data.sheetRecords : [];
-            const remoteMeters = Array.isArray(data.existingMeterNos) ? data.existingMeterNos : [];
-            const remoteDevices = Array.isArray(data.existingDeviceNos) ? data.existingDeviceNos : [];
-            const remoteIds = new Set(
-              remoteRecords.map((r: any) => (r.id ? String(r.id).trim() : ''))
-            );
+          const queueIdSet = new Set(currentQueue.map((q) => q.id));
 
-            const reconciledIds = new Set<string>();
+          const remoteRecords: WorkRecord[] = data.sheetRecords.map((remoteRec: WorkRecord) => ({
+            ...remoteRec,
+            status: 'synced' as const,
+          }));
 
-            const unSyncedQueue = currentQueue.filter((qItem) => {
-              // Check by permanent ID
-              if (qItem.id && remoteIds.has(String(qItem.id).trim())) {
+          const remoteMeterNos = new Set(
+            (data.existingMeterNos || remoteRecords.map((r: any) => r.newMeterNo))
+              .filter(Boolean)
+              .map((s: string) => normalizeSerial(s))
+          );
+          const remoteDeviceNos = new Set(
+            (data.existingDeviceNos || remoteRecords.map((r: any) => r.deviceNo))
+              .filter(Boolean)
+              .map((s: string) => normalizeSerial(s))
+          );
+          const remoteIdSet = new Set(remoteRecords.map((r) => r.id));
+
+          // Only keep local records that are in the offline queue AND not yet recorded in Google Sheet
+          const pendingQueueRecords = currentHist.filter((loc) => {
+            if (!queueIdSet.has(loc.id)) return false;
+            if (remoteIdSet.has(loc.id)) return false;
+            if (loc.type === 'MeterInstallation' && loc.newMeterNo && remoteMeterNos.has(normalizeSerial(loc.newMeterNo))) {
+              return false;
+            }
+            if (loc.type === 'InfraInstallation' && loc.deviceNo && remoteDeviceNos.has(normalizeSerial(loc.deviceNo))) {
+              return false;
+            }
+            return true;
+          });
+
+          // Accurate 1:1 history matching Google Sheet + unsynced offline entries
+          const reconciledHistory = [...pendingQueueRecords, ...remoteRecords];
+          setStoredHistory(reconciledHistory);
+          setHistory(reconciledHistory);
+        }
+
+        // 3. Auto-reconcile local offline queue against freshly fetched Google Sheet data
+        const currentQueue = getStoredQueue();
+        if (currentQueue.length > 0 && Array.isArray(data.sheetRecords)) {
+          const remoteRecords = Array.isArray(data.sheetRecords) ? data.sheetRecords : [];
+          const remoteMeters = Array.isArray(data.existingMeterNos) ? data.existingMeterNos : [];
+          const remoteDevices = Array.isArray(data.existingDeviceNos) ? data.existingDeviceNos : [];
+          const remoteIds = new Set<string>();
+          remoteRecords.forEach((r: any) => {
+            if (r.id) {
+              remoteIds.add(String(r.id).trim().toUpperCase());
+              remoteIds.add(String(r.id).trim());
+            }
+          });
+
+          const reconciledIds = new Set<string>();
+
+          const unSyncedQueue = currentQueue.filter((qItem) => {
+            const cleanQId = qItem.id ? String(qItem.id).trim().toUpperCase() : '';
+            // 1. Check by permanent ID
+            if (cleanQId && (remoteIds.has(cleanQId) || remoteIds.has(String(qItem.id).trim()))) {
+              reconciledIds.add(qItem.id);
+              return false;
+            }
+            if (qItem.id && remoteRecords.some((r: any) => r.id && String(r.id).trim().toUpperCase() === cleanQId)) {
+              reconciledIds.add(qItem.id);
+              return false;
+            }
+            // 2. Check by Meter serial
+            if (qItem.type === 'MeterInstallation' && (qItem as any).newMeterNo) {
+              const mNo = (qItem as any).newMeterNo;
+              if (
+                remoteMeters.some((n: string) => areSerialsEqual(n, mNo)) ||
+                remoteRecords.some((r: any) => r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, mNo))
+              ) {
                 reconciledIds.add(qItem.id);
                 return false;
               }
-              // Check by Meter serial
-              if (qItem.type === 'MeterInstallation' && (qItem as any).newMeterNo) {
-                const mNo = (qItem as any).newMeterNo;
-                if (remoteMeters.some((n: string) => areSerialsEqual(n, mNo))) {
-                  reconciledIds.add(qItem.id);
-                  return false;
-                }
-                if (remoteRecords.some((r: any) => r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, mNo))) {
-                  reconciledIds.add(qItem.id);
-                  return false;
-                }
-              }
-              // Check by Infra device number
-              if (qItem.type === 'InfraInstallation' && (qItem as any).deviceNo) {
-                const dNo = (qItem as any).deviceNo;
-                if (remoteDevices.some((n: string) => areSerialsEqual(n, dNo))) {
-                  reconciledIds.add(qItem.id);
-                  return false;
-                }
-                if (remoteRecords.some((r: any) => r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, dNo))) {
-                  reconciledIds.add(qItem.id);
-                  return false;
-                }
-              }
-              return true;
-            });
-
-            if (unSyncedQueue.length !== currentQueue.length) {
-              updateQueue(unSyncedQueue);
-              // Also update local history items so their status changes to 'synced'
-              const curHist = getStoredHistory();
-              const updHist = curHist.map((h) =>
-                reconciledIds.has(h.id) ? { ...h, status: 'synced' as const } : h
-              );
-              setStoredHistory(updHist);
-              setHistory(updHist);
-
-              const clearedCount = currentQueue.length - unSyncedQueue.length;
-              showToast(
-                `Reconciled: ${clearedCount} queue record${clearedCount > 1 ? 's' : ''} confirmed in Google Sheet & cleared from queue ✓`,
-                'success'
-              );
             }
+            // 3. Check by Infra device number
+            if (qItem.type === 'InfraInstallation' && (qItem as any).deviceNo) {
+              const dNo = (qItem as any).deviceNo;
+              if (
+                remoteDevices.some((n: string) => areSerialsEqual(n, dNo)) ||
+                remoteRecords.some((r: any) => r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, dNo))
+              ) {
+                reconciledIds.add(qItem.id);
+                return false;
+              }
+            }
+            return true;
+          });
+
+          if (unSyncedQueue.length !== currentQueue.length) {
+            updateQueue(unSyncedQueue);
+            // Also update local history items so their status changes to 'synced'
+            const curHist = getStoredHistory();
+            const updHist = curHist.map((h) =>
+              reconciledIds.has(h.id) ? { ...h, status: 'synced' as const } : h
+            );
+            setStoredHistory(updHist);
+            setHistory(updHist);
+
+            const clearedCount = currentQueue.length - unSyncedQueue.length;
+            showToast(
+              `Reconciled: ${clearedCount} queue record${clearedCount > 1 ? 's' : ''} confirmed in Google Sheet & cleared from queue ✓`,
+              'success'
+            );
           }
-        } else if (data.sheetStats && Number(data.sheetStats.totalMeterInstall) === 0 && Number(data.sheetStats.totalInfraInstall) === 0) {
-          // If sheet stats explicitly say 0 for both, purge synced records from local history
-          const currentHist = getStoredHistory();
-          const pendingOnly = currentHist.filter((r) => r.status === 'pending');
-          setStoredHistory(pendingOnly);
-          setHistory(pendingOnly);
         }
 
         if (isManual) {
@@ -446,49 +488,150 @@ export default function App() {
     triggerHaptic([30, 50, 30]);
 
     let syncedCount = 0;
-    let reconciledCount = 0;
 
     try {
-      // Loop sequentially item-by-item:
-      // This prevents giant payloads from timing out on slow 2G/3G connections,
-      // and ensures that once an item is synced, it is IMMEDIATELY removed from the queue!
-      for (let i = 0; i < currentQueue.length; i++) {
-        const item = currentQueue[i];
-        if (!item) continue;
+      // 1. Deduplicate queue items by ID and by serial number before processing
+      const seenIds = new Set<string>();
+      const seenSerials = new Set<string>();
+      const cleanQueue: WorkRecord[] = [];
 
-        // 1. Strict Duplicate Check: Has this record ALREADY been recorded in Google Sheet or Synced History?
+      for (const qItem of currentQueue) {
+        if (!qItem || !qItem.id || seenIds.has(qItem.id)) continue;
+        seenIds.add(qItem.id);
+        const sNo = qItem.type === 'MeterInstallation' ? (qItem as any).newMeterNo : (qItem as any).deviceNo;
+        const norm = normalizeSerial(sNo);
+        if (norm && seenSerials.has(norm)) continue;
+        if (norm) seenSerials.add(norm);
+        cleanQueue.push(qItem);
+      }
+
+      if (cleanQueue.length !== currentQueue.length) {
+        updateQueue(cleanQueue);
+      }
+
+      // 2. Pre-fetch fresh live state from Google Sheet to detect any records saved during previous network disconnect
+      const liveSheetIds = new Set<string>();
+      const initialHist = getStoredHistory();
+      initialHist.forEach((h) => {
+        if (h.id && h.status === 'synced') {
+          liveSheetIds.add(String(h.id).trim().toUpperCase());
+          liveSheetIds.add(String(h.id).trim());
+        }
+      });
+
+      let liveSheetMeters = [...(settings.existingMeterNos || [])];
+      let liveSheetDevices = [...(settings.existingDeviceNos || [])];
+
+      try {
+        const verifyUrl = settings.scriptUrl.includes('?')
+          ? `${settings.scriptUrl}&action=getTechnicians&_t=${Date.now()}`
+          : `${settings.scriptUrl}?action=getTechnicians&_t=${Date.now()}`;
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 6000);
+        const vRes = await fetch(verifyUrl, { cache: 'no-store', signal: ctrl.signal });
+        clearTimeout(tid);
+        const vData = await vRes.json();
+        if (vData && vData.status === 'success') {
+          if (Array.isArray(vData.existingMeterNos)) liveSheetMeters = vData.existingMeterNos;
+          if (Array.isArray(vData.existingDeviceNos)) liveSheetDevices = vData.existingDeviceNos;
+          if (Array.isArray(vData.sheetRecords)) {
+            vData.sheetRecords.forEach((r: any) => {
+              if (r.id) {
+                liveSheetIds.add(String(r.id).trim().toUpperCase());
+                liveSheetIds.add(String(r.id).trim());
+              }
+              if (r.type === 'MeterInstallation' && r.newMeterNo) {
+                liveSheetMeters.push(r.newMeterNo);
+              }
+              if (r.type === 'InfraInstallation' && r.deviceNo) {
+                liveSheetDevices.push(r.deviceNo);
+              }
+            });
+          }
+          setSettings((prev) => ({
+            ...prev,
+            existingMeterNos: liveSheetMeters,
+            existingDeviceNos: liveSheetDevices,
+          }));
+        }
+      } catch (chkErr) {
+        console.warn('Could not refresh sheet records before sync, using cached serials:', chkErr);
+      }
+
+      for (let i = 0; i < cleanQueue.length; i++) {
+        const item = cleanQueue[i];
+        if (!item || !item.id) continue;
+
+        // Skip if this record ID is currently in-flight
+        if (inFlightSyncIdsRef.current.has(item.id)) continue;
+        inFlightSyncIdsRef.current.add(item.id);
+
         const isMeter = item.type === 'MeterInstallation';
         const isInfra = item.type === 'InfraInstallation';
         const mNo = isMeter ? (item as any).newMeterNo : undefined;
         const dNo = isInfra ? (item as any).deviceNo : undefined;
 
-        const currentSettings = getStoredSettings();
-        const currentHist = getStoredHistory();
+        // CRITICAL DUPLICATE VALIDATION: Check EITHER ID OR Serial Number!
+        // If either ID or Serial is already in Google Sheet, it is a duplicate from network disconnect
+        const curHist = getStoredHistory();
+        const cleanItemId = item.id ? String(item.id).trim().toUpperCase() : '';
+        const rawItemId = item.id ? String(item.id).trim() : '';
+        const alreadyMarkedSynced = curHist.some((h) => h.id === item.id && h.status === 'synced');
+        const inLiveIds = cleanItemId && (liveSheetIds.has(cleanItemId) || liveSheetIds.has(rawItemId));
+        const inLiveMeters =
+          isMeter &&
+          mNo &&
+          (liveSheetMeters.some((no) => areSerialsEqual(no, mNo)) ||
+            curHist.some(
+              (h) =>
+                h.id !== item.id &&
+                h.status === 'synced' &&
+                h.type === 'MeterInstallation' &&
+                areSerialsEqual((h as any).newMeterNo, mNo)
+            ));
+        const inLiveDevices =
+          isInfra &&
+          dNo &&
+          (liveSheetDevices.some((no) => areSerialsEqual(no, dNo)) ||
+            curHist.some(
+              (h) =>
+                h.id !== item.id &&
+                h.status === 'synced' &&
+                h.type === 'InfraInstallation' &&
+                areSerialsEqual((h as any).deviceNo, dNo)
+            ));
 
-        const alreadyInSheet =
-          (isMeter && mNo && (currentSettings.existingMeterNos || []).some((no) => areSerialsEqual(no, mNo))) ||
-          (isInfra && dNo && (currentSettings.existingDeviceNos || []).some((no) => areSerialsEqual(no, dNo))) ||
-          (isMeter && mNo && currentHist.some((h) => h.status === 'synced' && h.type === 'MeterInstallation' && areSerialsEqual((h as any).newMeterNo, mNo))) ||
-          (isInfra && dNo && currentHist.some((h) => h.status === 'synced' && h.type === 'InfraInstallation' && areSerialsEqual((h as any).deviceNo, dNo))) ||
-          currentHist.some((h) => h.status === 'synced' && h.id && item.id && String(h.id).trim() === String(item.id).trim());
+        const isDuplicate = alreadyMarkedSynced || inLiveIds || inLiveMeters || inLiveDevices;
 
-        if (alreadyInSheet) {
-          // Record is already safely recorded in Google Sheet! Reconcile immediately without re-sending.
-          reconciledCount++;
-          // Mark status 'synced' in history
-          const updatedHist = currentHist.map((h) => (h.id === item.id ? { ...h, status: 'synced' as const } : h));
-          setStoredHistory(updatedHist);
-          setHistory(updatedHist);
-
-          // Remove immediately from queue
+        if (isDuplicate) {
+          // Record is ALREADY safely stored in Google Sheet. Do NOT re-post to avoid duplicate rows!
           const remainingQueue = getStoredQueue().filter((q) => q.id !== item.id);
           updateQueue(remainingQueue);
+          const updHist = curHist.map((h) => (h.id === item.id ? { ...h, status: 'synced' as const } : h));
+          setStoredHistory(updHist);
+          setHistory(updHist);
+          inFlightSyncIdsRef.current.delete(item.id);
+          syncedCount++;
+
+          const dupSerial = mNo || dNo || item.id;
+          const matchMethod = inLiveIds ? 'Record ID' : 'Serial Number';
+          setDuplicateNotice({
+            title: 'Auto-Sync: Duplicate Prevented!',
+            serialNumber: String(dupSerial),
+            recordId: item.id,
+            technicianName: item.technicianName,
+            siteName: item.siteName,
+            reason: `Record #${dupSerial} pehle se Google Sheet me save hai (${matchMethod} match)! Auto-Sync ne duplicate entry rok di hai.`,
+            actionTaken: 'Queue se safely remove kar diya gaya taaki double entry na ho, aur status Synced kar diya gaya.',
+            source: 'sync',
+          });
+          showToast(`Duplicate Check: #${dupSerial} Google Sheet me pehle se save hai! Queue cleared ✓`, 'info');
           continue;
         }
 
-        // 2. Transmit single record with AbortController timeout (35s)
+        // Transmit record to Google Apps Script with fast 12s timeout
         const controller = new AbortController();
-        const timeoutTimer = setTimeout(() => controller.abort(), 35000);
+        const timeoutTimer = setTimeout(() => controller.abort(), 12000);
 
         try {
           await fetch(settings.scriptUrl, {
@@ -514,7 +657,7 @@ export default function App() {
           const remainingQueue = getStoredQueue().filter((q) => q.id !== item.id);
           updateQueue(remainingQueue);
 
-          // Register serial in settings so no subsequent entry can duplicate it
+          // Register serial in settings so subsequent entries know it's in Google Sheet
           if (isMeter && mNo) {
             setSettings((prev) => {
               const list = prev.existingMeterNos || [];
@@ -539,12 +682,13 @@ export default function App() {
         } catch (itemErr) {
           clearTimeout(timeoutTimer);
           console.warn('Network issue during item sync:', itemErr);
-          // Network dropped or timed out on this item; break loop so we don't spam failed attempts
           break;
+        } finally {
+          inFlightSyncIdsRef.current.delete(item.id);
         }
       }
 
-      if (syncedCount > 0 || reconciledCount > 0) {
+      if (syncedCount > 0) {
         playFeedbackSound('success');
         triggerHaptic([50, 80, 50, 100]);
         confetti({
@@ -553,15 +697,12 @@ export default function App() {
           origin: { y: 0.8 },
         });
 
-        const messages: string[] = [];
-        if (syncedCount > 0) messages.push(`Synced ${syncedCount} record${syncedCount > 1 ? 's' : ''}`);
-        if (reconciledCount > 0) messages.push(`${reconciledCount} duplicate(s) reconciled & cleared`);
-        showToast(messages.join(', ') + ' ✓', 'success');
+        showToast(`Synced ${syncedCount} queued record${syncedCount > 1 ? 's' : ''} to Google Sheet! ✓`, 'success');
 
-        // Refresh remote technicians & serials in background after sync
+        // Refresh remote sheet data in background after sync
         setTimeout(() => {
           fetchRemoteTechnicians(false);
-        }, 1200);
+        }, 1500);
       } else {
         const remaining = getStoredQueue();
         if (remaining.length > 0 && !navigator.onLine) {
@@ -765,120 +906,228 @@ export default function App() {
     };
   }, [currentUser]);
 
-  // Handle Form Submission (Meter or Infra) - Ultra-Fast Instant Save
+  // Asynchronous Background Upload: Uploads directly to Google Sheet without blocking technician
+  const executeBackgroundUpload = async (
+    record: WorkRecord,
+    serialLabel: string,
+    isMeter: boolean,
+    mNo?: string,
+    dNo?: string
+  ) => {
+    const job = {
+      id: record.id,
+      serial: String(mNo || dNo || record.id),
+      label: serialLabel,
+      record,
+      status: 'uploading' as const,
+      startedAt: Date.now(),
+    };
+    setBackgroundUploads((prev) => [...prev.filter((j) => j.id !== record.id), job]);
+    inFlightSyncIdsRef.current.add(record.id);
+
+    // DIRECT ONLINE SAVE:
+    if (navigator.onLine && settings.scriptUrl) {
+      const controller = new AbortController();
+      // Fast 12s timeout: with 40-70KB WebP photos, Google Apps Script finishes in 1.5-2.5s!
+      const timeoutTimer = setTimeout(() => controller.abort(), 12000);
+
+      try {
+        await fetch(settings.scriptUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify([record]),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutTimer);
+
+        // Upload Succeeded!
+        // Mark record as synced in history & storage
+        const curHist = getStoredHistory();
+        const updatedHist = curHist.map((h) =>
+          h.id === record.id ? { ...h, status: 'synced' as const } : h
+        );
+        setStoredHistory(updatedHist);
+        setHistory(updatedHist);
+
+        // Remove from queue if present
+        const curQ = getStoredQueue().filter((q) => q.id !== record.id);
+        updateQueue(curQ);
+
+        // Register serial number immediately in settings so no subsequent entry duplicates it
+        if (isMeter && mNo) {
+          setSettings((prev) => {
+            const list = prev.existingMeterNos || [];
+            if (!list.some((no) => areSerialsEqual(no, mNo))) {
+              const upd = { ...prev, existingMeterNos: [...list, String(mNo).trim()] };
+              saveStoredSettings(upd);
+              return upd;
+            }
+            return prev;
+          });
+        } else if (!isMeter && dNo) {
+          setSettings((prev) => {
+            const list = prev.existingDeviceNos || [];
+            if (!list.some((no) => areSerialsEqual(no, dNo))) {
+              const upd = { ...prev, existingDeviceNos: [...list, String(dNo).trim()] };
+              saveStoredSettings(upd);
+              return upd;
+            }
+            return prev;
+          });
+        }
+
+        // Show quick success confirmation!
+        showToast(`Google Sheet uploaded: ${serialLabel} ✓`, 'success');
+        confetti({ particleCount: 35, spread: 50, origin: { y: 0.85 } });
+
+        // Remove from background uploads
+        setBackgroundUploads((prev) => prev.filter((j) => j.id !== record.id));
+
+        // Fetch remote data in background to sync live sheet stats
+        setTimeout(() => fetchRemoteTechnicians(false), 2500);
+        return;
+      } catch (postErr) {
+        clearTimeout(timeoutTimer);
+        console.warn('Direct online background save timed out or network error. Placing in offline queue:', postErr);
+      } finally {
+        inFlightSyncIdsRef.current.delete(record.id);
+      }
+    }
+
+    // OFFLINE or Network issue:
+    // Safely store in offline queue so Auto-Sync will upload it when connection is restored
+    const currentQ = getStoredQueue();
+    if (!currentQ.some((q) => q.id === record.id)) {
+      updateQueue([...currentQ, { ...record, status: 'pending' }]);
+    }
+    setBackgroundUploads((prev) => prev.filter((j) => j.id !== record.id));
+    showToast(`Saved in offline Queue: ${serialLabel}. Online aane par auto-sync hoga ⚡`, 'info');
+
+    // Network flutter protection: If connection was lost midway, Google Sheet might have actually saved it!
+    // Trigger a fast background verification after 3.5 seconds to reconcile if the sheet recorded it
+    setTimeout(() => {
+      if (navigator.onLine && settings.scriptUrl) {
+        fetchRemoteTechnicians(false);
+      }
+    }, 3500);
+  };
+
+  // Handle Form Submission (Meter or Infra) - Instant Zero-Wait Save + Background Upload
   const handleFormSubmit = async (
     data: Omit<MeterInstallationRecord, 'id'> | Omit<InfraInstallationRecord, 'id'>
   ) => {
-    setIsSubmitting(true);
-    // Strict Duplicate Serial Validation across Memory, LocalStorage, Queue, and Google Sheet Serials
+    // 1. Strict Duplicate Serial Validation across Memory, LocalStorage, Queue, Google Sheet, AND active Background Uploads!
     const storedHistory = getStoredHistory();
     const storedQueue = getStoredQueue();
     const storedSettings = getStoredSettings();
     const allKnownMeters = [
       ...(settings.existingMeterNos || []),
       ...(storedSettings.existingMeterNos || []),
+      ...backgroundUploads
+        .filter((b) => b.record.type === 'MeterInstallation')
+        .map((b) => (b.record as any).newMeterNo),
     ];
     const allKnownDevices = [
       ...(settings.existingDeviceNos || []),
       ...(storedSettings.existingDeviceNos || []),
+      ...backgroundUploads
+        .filter((b) => b.record.type === 'InfraInstallation')
+        .map((b) => (b.record as any).deviceNo),
     ];
 
     if (data.type === 'MeterInstallation' && (data as any).newMeterNo) {
       const meterNo = (data as any).newMeterNo;
+      const inSheet = allKnownMeters.some((no) => areSerialsEqual(no, meterNo));
       const isMeterDup =
+        inSheet ||
         history.some((r) => r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, meterNo)) ||
         storedHistory.some((r) => r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, meterNo)) ||
         queue.some((r) => r.type === 'MeterInstallation' && areSerialsEqual((r as any).newMeterNo, meterNo)) ||
-        storedQueue.some((r) => r.type === 'MeterInstallation' && areSerialsEqual((r as any).newMeterNo, meterNo)) ||
-        allKnownMeters.some((no) => areSerialsEqual(no, meterNo));
+        storedQueue.some((r) => r.type === 'MeterInstallation' && areSerialsEqual((r as any).newMeterNo, meterNo));
 
       if (isMeterDup) {
         setIsSubmitting(false);
         triggerHaptic([50, 100, 50]);
-        showToast(`Duplicate: Meter #${meterNo} already registered in Google Sheet or history! Cannot re-submit.`, 'warning');
+        playFeedbackSound('error');
+        setDuplicateNotice({
+          title: 'Already Exists: Duplicate Meter Number',
+          serialNumber: String(meterNo),
+          siteName: data.siteName,
+          technicianName: currentUser || data.technicianName,
+          reason: inSheet
+            ? `Meter #${meterNo} pehle se Google Sheet ya active upload me darj hai!`
+            : `Meter #${meterNo} pehle se local history ya queue me darj hai!`,
+          actionTaken: 'Duplicate hone ki wajah se Queue me NAHI dala gaya.',
+          source: 'form',
+        });
+        showToast(`Duplicate: Meter #${meterNo} already registered! Queue me nahi gaya.`, 'warning');
         return;
       }
     } else if (data.type === 'InfraInstallation' && (data as any).deviceNo) {
       const devNo = (data as any).deviceNo;
+      const inSheet = allKnownDevices.some((no) => areSerialsEqual(no, devNo));
       const isDeviceDup =
+        inSheet ||
         history.some((r) => r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, devNo)) ||
         storedHistory.some((r) => r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, devNo)) ||
         queue.some((r) => r.type === 'InfraInstallation' && areSerialsEqual((r as any).deviceNo, devNo)) ||
-        storedQueue.some((r) => r.type === 'InfraInstallation' && areSerialsEqual((r as any).deviceNo, devNo)) ||
-        allKnownDevices.some((no) => areSerialsEqual(no, devNo));
+        storedQueue.some((r) => r.type === 'InfraInstallation' && areSerialsEqual((r as any).deviceNo, devNo));
 
       if (isDeviceDup) {
         setIsSubmitting(false);
         triggerHaptic([50, 100, 50]);
-        showToast(`Duplicate: Device #${devNo} already registered in Google Sheet or history! Cannot re-submit.`, 'warning');
+        playFeedbackSound('error');
+        setDuplicateNotice({
+          title: 'Already Exists: Duplicate Device Number',
+          serialNumber: String(devNo),
+          siteName: data.siteName,
+          technicianName: currentUser || data.technicianName,
+          reason: inSheet
+            ? `Device #${devNo} pehle se Google Sheet ya active upload me darj hai!`
+            : `Device #${devNo} pehle se local history ya queue me darj hai!`,
+          actionTaken: 'Duplicate hone ki wajah se Queue me NAHI dala gaya.',
+          source: 'form',
+        });
+        showToast(`Duplicate: Device #${devNo} already registered! Queue me nahi gaya.`, 'warning');
         return;
       }
     }
 
     const finalTech = currentUser || data.technicianName;
+    const newRecordId = `rec_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const newRecord: WorkRecord = {
       ...data,
       technicianName: finalTech,
       ...(data.type === 'InfraInstallation' ? { deviceLocation: data.towerNo } : {}),
-      id: `rec_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      status: isOnline ? 'synced' : 'pending',
+      id: newRecordId,
+      status: 'pending',
     } as WorkRecord;
 
-    // 1. Immediately save field memory
+    // Field memory
     setLastSiteName(data.siteName);
     setLastTechnician(finalTech);
 
-    // 2. Immediately register serial in settings to block any duplicate re-submission instantly
-    if (data.type === 'MeterInstallation' && (data as any).newMeterNo) {
-      const cleanMeterNo = String((data as any).newMeterNo).trim();
-      setSettings((prev) => {
-        const list = prev.existingMeterNos || [];
-        if (!list.some((no) => areSerialsEqual(no, cleanMeterNo))) {
-          const upd = { ...prev, existingMeterNos: [...list, cleanMeterNo] };
-          saveStoredSettings(upd);
-          return upd;
-        }
-        return prev;
-      });
-    } else if (data.type === 'InfraInstallation' && (data as any).deviceNo) {
-      const cleanDevNo = String((data as any).deviceNo).trim();
-      setSettings((prev) => {
-        const list = prev.existingDeviceNos || [];
-        if (!list.some((no) => areSerialsEqual(no, cleanDevNo))) {
-          const upd = { ...prev, existingDeviceNos: [...list, cleanDevNo] };
-          saveStoredSettings(upd);
-          return upd;
-        }
-        return prev;
-      });
-    }
+    const isMeter = data.type === 'MeterInstallation';
+    const mNo = isMeter ? (data as any).newMeterNo : undefined;
+    const dNo = !isMeter ? (data as any).deviceNo : undefined;
+    const serialLabel = isMeter ? `Meter #${mNo}` : `Device #${dNo}`;
 
-    // 3. Immediately save to local history (Zero data loss guarantee)
+    // 2. IMMEDIATE LOCAL PERSISTENCE: Record is 100% saved in history immediately!
     addToHistory([newRecord]);
     setHistory(getStoredHistory());
 
-    // 4. Instant tactile & audio feedback in ~40ms
+    // Instant Feedback: Success Sound + Haptic + Toast
     playFeedbackSound('success');
     triggerHaptic(40);
-    showToast(isOnline ? 'Saved! Syncing to Google Sheet... ⚡' : 'Saved offline successfully! ⚡', 'success');
+    showToast(`Form saved! Background upload in progress 🚀 Next form ready.`, 'success');
 
-    // 5. Release UI lock instantly so form resets and technician can enter next flat immediately
+    // 3. ZERO-WAIT FORM RESET:
+    // Reset isSubmitting immediately so form clears and technician can fill Form #2 without waiting!
     setIsSubmitting(false);
 
-    // 6. Safe Queue-First Architecture:
-    // Always store in sync queue with status 'pending' as the single coordinated source of truth
-    newRecord.status = 'pending';
-    const currentQueue = getStoredQueue();
-    if (!currentQueue.some((q) => q.id === newRecord.id)) {
-      updateQueue([...currentQueue, newRecord]);
-    }
-
-    // 7. If online, immediately invoke the safe sequential sync pipeline
-    if (isOnline && settings.scriptUrl) {
-      setTimeout(() => {
-        triggerSync();
-      }, 150);
-    }
+    // 4. TRIGGER ASYNCHRONOUS BACKGROUND UPLOAD:
+    executeBackgroundUpload(newRecord, serialLabel, isMeter, mNo, dNo);
   };
 
   const handleImportQueue = (importedRecords: WorkRecord[]) => {
@@ -901,17 +1150,222 @@ export default function App() {
     }
   };
 
-  const handleDeleteQueueItem = (id: string) => {
+  const handleDeleteQueueItem = async (id: string) => {
+    const item = queue.find((q) => q.id === id);
+    if (!item) return;
+
+    setProcessingQueueId(id);
     triggerHaptic(30);
-    const updated = queue.filter((item) => item.id !== id);
-    updateQueue(updated);
-    showToast('Record removed from queue', 'info');
+
+    const isMeter = item.type === 'MeterInstallation';
+    const isInfra = item.type === 'InfraInstallation';
+    const mNo = isMeter ? (item as any).newMeterNo : undefined;
+    const dNo = isInfra ? (item as any).deviceNo : undefined;
+    const serialLabel = isMeter ? `Meter #${mNo}` : `Device #${dNo}`;
+
+    try {
+      // 1. Check Google Sheet: check if data is already saved by ID OR Serial Number
+      let isAlreadySaved = false;
+      let matchedBy = '';
+
+      const curHist = getStoredHistory();
+      const cleanId = item.id ? String(item.id).trim().toUpperCase() : '';
+      const rawId = item.id ? String(item.id).trim() : '';
+
+      // Check local synced history
+      const inHistSynced = curHist.some((h) => {
+        if (h.status !== 'synced') return false;
+        if (h.id && (String(h.id).trim().toUpperCase() === cleanId || String(h.id).trim() === rawId)) {
+          matchedBy = 'ID';
+          return true;
+        }
+        if (isMeter && mNo && h.type === 'MeterInstallation' && areSerialsEqual((h as any).newMeterNo, mNo)) {
+          matchedBy = 'Meter Serial';
+          return true;
+        }
+        if (isInfra && dNo && h.type === 'InfraInstallation' && areSerialsEqual((h as any).deviceNo, dNo)) {
+          matchedBy = 'Device Serial';
+          return true;
+        }
+        return false;
+      });
+
+      if (inHistSynced) {
+        isAlreadySaved = true;
+      }
+
+      // Check settings lists
+      if (!isAlreadySaved) {
+        if (isMeter && mNo && settings.existingMeterNos?.some((no) => areSerialsEqual(no, mNo))) {
+          isAlreadySaved = true;
+          matchedBy = 'Meter Serial';
+        } else if (isInfra && dNo && settings.existingDeviceNos?.some((no) => areSerialsEqual(no, dNo))) {
+          isAlreadySaved = true;
+          matchedBy = 'Device Serial';
+        }
+      }
+
+      // If online, do live query to Google Sheet
+      if (navigator.onLine && settings.scriptUrl) {
+        try {
+          const verifyUrl = settings.scriptUrl.includes('?')
+            ? `${settings.scriptUrl}&action=getTechnicians&_t=${Date.now()}`
+            : `${settings.scriptUrl}?action=getTechnicians&_t=${Date.now()}`;
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(), 6000);
+          const vRes = await fetch(verifyUrl, { cache: 'no-store', signal: ctrl.signal });
+          clearTimeout(tid);
+          const vData = await vRes.json();
+          if (vData && vData.status === 'success') {
+            if (Array.isArray(vData.existingMeterNos)) {
+              setSettings((prev) => ({ ...prev, existingMeterNos: vData.existingMeterNos }));
+            }
+            if (Array.isArray(vData.existingDeviceNos)) {
+              setSettings((prev) => ({ ...prev, existingDeviceNos: vData.existingDeviceNos }));
+            }
+
+            if (Array.isArray(vData.sheetRecords)) {
+              for (const r of vData.sheetRecords) {
+                const rCleanId = r.id ? String(r.id).trim().toUpperCase() : '';
+                if (rCleanId && (rCleanId === cleanId || String(r.id).trim() === rawId)) {
+                  isAlreadySaved = true;
+                  matchedBy = 'Record ID';
+                  break;
+                }
+                if (isMeter && mNo && r.type === 'MeterInstallation' && areSerialsEqual(r.newMeterNo, mNo)) {
+                  isAlreadySaved = true;
+                  matchedBy = 'Meter Serial';
+                  break;
+                }
+                if (isInfra && dNo && r.type === 'InfraInstallation' && areSerialsEqual(r.deviceNo, dNo)) {
+                  isAlreadySaved = true;
+                  matchedBy = 'Device Serial';
+                  break;
+                }
+              }
+            }
+
+            if (!isAlreadySaved) {
+              if (isMeter && mNo && Array.isArray(vData.existingMeterNos) && vData.existingMeterNos.some((n: string) => areSerialsEqual(n, mNo))) {
+                isAlreadySaved = true;
+                matchedBy = 'Meter Serial';
+              } else if (isInfra && dNo && Array.isArray(vData.existingDeviceNos) && vData.existingDeviceNos.some((n: string) => areSerialsEqual(n, dNo))) {
+                isAlreadySaved = true;
+                matchedBy = 'Device Serial';
+              }
+            }
+          }
+        } catch (vErr) {
+          console.warn('Live verify check before delete failed, falling back to local:', vErr);
+        }
+      }
+
+      // CASE 1: AGAR DATA SAVE HAI GOOGLE SHEET ME -> Mark as 'synced' & remove from queue!
+      if (isAlreadySaved) {
+        const freshHist = getStoredHistory();
+        const hasInHist = freshHist.some((h) => h.id === item.id);
+        const updHist = hasInHist
+          ? freshHist.map((h) => (h.id === item.id ? { ...h, status: 'synced' as const } : h))
+          : [{ ...item, status: 'synced' as const }, ...freshHist];
+        setStoredHistory(updHist);
+        setHistory(updHist);
+
+        const remainingQ = getStoredQueue().filter((q) => q.id !== id);
+        updateQueue(remainingQ);
+
+        playFeedbackSound('success');
+        triggerHaptic([30, 40]);
+        showToast(
+          `Google Sheet me already save hai (${matchedBy}) ✓ Synced mark kar diya aur queue se hata diya!`,
+          'success'
+        );
+        return;
+      }
+
+      // CASE 2: AGAR DATA SAVE NAHI HAI -> Save to Google Sheet now!
+      if (navigator.onLine && settings.scriptUrl) {
+        showToast(`Google Sheet me nahi mila. Ab save kar rahe hain (${serialLabel})...`, 'info');
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 12000);
+
+        try {
+          await fetch(settings.scriptUrl, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify([item]),
+            signal: ctrl.signal,
+          });
+          clearTimeout(timer);
+
+          // Uploaded successfully! Mark synced in history & remove from queue
+          const freshHist = getStoredHistory();
+          const hasInHist = freshHist.some((h) => h.id === item.id);
+          const updHist = hasInHist
+            ? freshHist.map((h) => (h.id === item.id ? { ...h, status: 'synced' as const } : h))
+            : [{ ...item, status: 'synced' as const }, ...freshHist];
+          setStoredHistory(updHist);
+          setHistory(updHist);
+
+          const remainingQ = getStoredQueue().filter((q) => q.id !== id);
+          updateQueue(remainingQ);
+
+          if (isMeter && mNo) {
+            setSettings((prev) => ({
+              ...prev,
+              existingMeterNos: [...(prev.existingMeterNos || []), String(mNo).trim()],
+            }));
+          } else if (isInfra && dNo) {
+            setSettings((prev) => ({
+              ...prev,
+              existingDeviceNos: [...(prev.existingDeviceNos || []), String(dNo).trim()],
+            }));
+          }
+
+          playFeedbackSound('success');
+          triggerHaptic([40, 80]);
+          confetti({ particleCount: 30, spread: 50, origin: { y: 0.85 } });
+          showToast(
+            `Google Sheet me successfully save ho gaya aur queue se hata diya gaya! ✓ (${serialLabel})`,
+            'success'
+          );
+          setTimeout(() => fetchRemoteTechnicians(false), 2000);
+          return;
+        } catch (uploadErr) {
+          clearTimeout(timer);
+          console.error('Save before delete failed:', uploadErr);
+        }
+      }
+
+      // CASE 3: Offline or upload failed -> Prompt user before discarding
+      const confirmDiscard = window.confirm(
+        `DHYAN DEIN: ${serialLabel} abhi Google Sheet me save NAHI hai!\n\nKya aap sach me ise bina Google Sheet me save kiye queue se DELETE karna chahte hain?`
+      );
+      if (confirmDiscard) {
+        const remainingQ = getStoredQueue().filter((q) => q.id !== id);
+        updateQueue(remainingQ);
+        showToast(`Queue se delete kiya gaya: ${serialLabel}`, 'info');
+      }
+    } finally {
+      setProcessingQueueId(null);
+    }
   };
 
-  const handleClearQueue = () => {
+  const handleClearQueue = async () => {
     triggerHaptic(40);
-    updateQueue([]);
-    showToast('Queue cleared', 'info');
+    const currentQ = getStoredQueue();
+    if (currentQ.length === 0) return;
+
+    if (!navigator.onLine) {
+      if (window.confirm('Internet offline hai. Kya aap bina save kiye queue ke sabhi records delete karna chahte hain?')) {
+        updateQueue([]);
+        showToast('Queue cleared', 'info');
+      }
+      return;
+    }
+
+    showToast('Queue ke sabhi records Google Sheet me verify karke process kiye ja rahe hain...', 'info');
+    await triggerSync();
   };
 
   const handleClearHistory = () => {
@@ -998,6 +1452,23 @@ export default function App() {
       }
     } else {
       showToast('Record deleted from local history', 'info');
+    }
+  };
+
+  const handleReQueueItem = (record: WorkRecord) => {
+    triggerHaptic(30);
+    const pendingItem: WorkRecord = { ...record, status: 'pending' };
+    const currentQ = getStoredQueue();
+    if (!currentQ.some((q) => q.id === record.id)) {
+      updateQueue([...currentQ, pendingItem]);
+    }
+    const curHist = getStoredHistory();
+    const updHist = curHist.map((h) => (h.id === record.id ? pendingItem : h));
+    setStoredHistory(updHist);
+    setHistory(updHist);
+    showToast('Queued for sync! Connecting to Google Sheet... ⚡', 'info');
+    if (navigator.onLine && settings.scriptUrl) {
+      setTimeout(() => triggerSync(), 150);
     }
   };
 
@@ -1283,6 +1754,26 @@ export default function App() {
               </nav>
             </header>
 
+            {/* Active Background Upload Banner */}
+            {backgroundUploads.length > 0 && (
+              <div className="bg-gradient-to-r from-indigo-600 via-indigo-700 to-indigo-800 text-white px-4 py-2.5 flex items-center justify-between text-xs shadow-md border-b border-indigo-500/40 animate-pulse">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <RefreshCw className="w-4 h-4 animate-spin shrink-0 text-indigo-200" />
+                  <div className="truncate min-w-0">
+                    <span className="font-bold">
+                      ⚡ Background Uploading ({backgroundUploads.length}):
+                    </span>{' '}
+                    <span className="text-indigo-100 font-medium">
+                      {backgroundUploads.map((b) => b.label).join(', ')}
+                    </span>
+                  </div>
+                </div>
+                <span className="shrink-0 bg-emerald-500/25 text-emerald-200 border border-emerald-400/40 text-[10px] font-bold px-2.5 py-0.5 rounded-full ml-2 shadow-xs">
+                  Next Form Ready ✓
+                </span>
+              </div>
+            )}
+
             {/* Sync Status Banner if queue has pending items */}
             {queue.length > 0 && activeTab !== 'queue' && (
               <div
@@ -1324,6 +1815,15 @@ export default function App() {
                     (r): r is MeterInstallationRecord => Boolean(r && r.type === 'MeterInstallation')
                   )}
                   sheetExistingMeterNos={settings.existingMeterNos || []}
+                  onDuplicateAttempt={(serial, reason) => {
+                    setDuplicateNotice({
+                      title: 'Already Exists: Duplicate Meter Number',
+                      serialNumber: serial,
+                      reason,
+                      actionTaken: 'Duplicate hone ki wajah se Queue me NAHI dala gaya.',
+                      source: 'form',
+                    });
+                  }}
                 />
               </div>
 
@@ -1343,6 +1843,15 @@ export default function App() {
                     (r): r is InfraInstallationRecord => Boolean(r && r.type === 'InfraInstallation')
                   )}
                   sheetExistingDeviceNos={settings.existingDeviceNos || []}
+                  onDuplicateAttempt={(serial, reason) => {
+                    setDuplicateNotice({
+                      title: 'Already Exists: Duplicate Device Number',
+                      serialNumber: serial,
+                      reason,
+                      actionTaken: 'Duplicate hone ki wajah se Queue me NAHI dala gaya.',
+                      source: 'form',
+                    });
+                  }}
                 />
               </div>
 
@@ -1357,17 +1866,24 @@ export default function App() {
                   onDeleteItem={handleDeleteQueueItem}
                   onClearQueue={handleClearQueue}
                   onPreviewPhoto={(url, title) => setPreviewPhoto({ url, title })}
+                  processingItemId={processingQueueId}
                 />
               </div>
 
               <div className={activeTab === 'history' ? 'block' : 'hidden'}>
                 <HistoryManager
                   history={history}
+                  queue={queue}
                   currentUser={currentUser}
                   onClearHistory={handleClearHistory}
                   onUpdateItem={handleUpdateHistoryItem}
                   onDeleteItem={handleDeleteHistoryItem}
                   onPreviewPhoto={(url, title) => setPreviewPhoto({ url, title })}
+                  onTriggerSync={triggerSync}
+                  onReQueueItem={handleReQueueItem}
+                  isSyncing={isSyncing}
+                  sheetExistingMeterNos={settings.existingMeterNos || []}
+                  sheetExistingDeviceNos={settings.existingDeviceNos || []}
                 />
               </div>
             </main>
@@ -1457,6 +1973,13 @@ export default function App() {
           currentUser={currentUser}
           history={history}
           queue={queue}
+        />
+
+        {/* Duplicate Notice Alert Modal */}
+        <DuplicateAlertModal
+          isOpen={Boolean(duplicateNotice)}
+          onClose={() => setDuplicateNotice(null)}
+          data={duplicateNotice}
         />
       </div>
     </div>

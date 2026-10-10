@@ -81,9 +81,10 @@ export const TechnicianDataExportModal: React.FC<TechnicianDataExportModalProps>
   // Filter records strictly for the current logged-in technician
   const filteredRecords = useMemo(() => {
     return combinedRecords.filter((rec) => {
-      // 1. Current technician filter
+      // 1. Current technician filter (Strict isolation: only own records allowed)
       if (currentUser) {
-        if (rec.technicianName?.trim().toLowerCase() !== currentUser.trim().toLowerCase()) {
+        const recTech = (rec.technicianName || '').trim().toLowerCase();
+        if (!recTech || recTech !== currentUser.trim().toLowerCase()) {
           return false;
         }
       }

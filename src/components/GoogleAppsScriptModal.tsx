@@ -27,6 +27,8 @@ export const APPS_SCRIPT_CODE = `/**
  */
 
 // Helper function to decode Base64 image and save to Google Drive folder
+// Helper function to decode Base64 image and save to Google Drive folder
+var _cachedDriveFolder = null;
 function savePhotoToDrive(dataUri, fileName, folderName) {
   if (!dataUri || typeof dataUri !== 'string' || dataUri.indexOf('base64,') === -1) {
     return dataUri || "";
@@ -35,15 +37,30 @@ function savePhotoToDrive(dataUri, fileName, folderName) {
     var parts = dataUri.split('base64,');
     var contentType = parts[0].split(':')[1].split(';')[0];
     var decoded = Utilities.base64Decode(parts[1]);
-    var blob = Utilities.newBlob(decoded, contentType, fileName);
+
+    var ext = ".jpg";
+    if (contentType.indexOf("webp") !== -1) {
+      ext = ".webp";
+    } else if (contentType.indexOf("png") !== -1) {
+      ext = ".png";
+    }
+    var cleanFileName = fileName.replace(/\.[a-zA-Z0-9]+$/, "") + ext;
+    var blob = Utilities.newBlob(decoded, contentType, cleanFileName);
 
     var targetFolderName = folderName || "Meter_Infra_Photos";
-    var folders = DriveApp.getFoldersByName(targetFolderName);
-    var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(targetFolderName);
+    if (!_cachedDriveFolder) {
+      var folders = DriveApp.getFoldersByName(targetFolderName);
+      if (folders.hasNext()) {
+        _cachedDriveFolder = folders.next();
+      } else {
+        _cachedDriveFolder = DriveApp.createFolder(targetFolderName);
+        try {
+          _cachedDriveFolder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+        } catch (fErr) {}
+      }
+    }
 
-    var file = folder.createFile(blob);
-    // Make viewable via link
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var file = _cachedDriveFolder.createFile(blob);
     return file.getUrl();
   } catch (err) {
     return "Drive Error: " + err.toString();
@@ -104,12 +121,23 @@ function buildColIndexMap(headerRow) {
 }
 
 function getColIdx(map, possibleNames, defaultIdx) {
+  // Pass 1: Strict exact matching across all candidate names
   for (var i = 0; i < possibleNames.length; i++) {
     var clean = possibleNames[i].toLowerCase().replace(/[^a-z0-9]/g, "");
     if (map[clean] !== undefined) return map[clean];
-    // Partial search
+  }
+  // Pass 2: Boundary or safe partial matching (ignoring collisions like 'number' matching 'devicenumber')
+  for (var j = 0; j < possibleNames.length; j++) {
+    var pClean = possibleNames[j].toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (pClean.length < 3) continue;
     for (var key in map) {
-      if (key.indexOf(clean) !== -1 || clean.indexOf(key) !== -1) return map[key];
+      if (key === pClean) return map[key];
+      if (key.indexOf(pClean) !== -1 || pClean.indexOf(key) !== -1) {
+        if ((pClean === "number" || pClean === "no") && (key.indexOf("device") !== -1 || key.indexOf("meter") !== -1 || key.indexOf("serial") !== -1)) {
+          continue;
+        }
+        return map[key];
+      }
     }
   }
   return defaultIdx;
@@ -505,11 +533,11 @@ function doGet(e) {
   }
 
   if (action === "getTechnicians" || action === "getDropdowns") {
-    var sheet = ss.getSheetByName("Technicians");
+    var sheet = findSheetSmart(ss, ["technicians", "technician", "techs", "tech", "staff", "users", "sheet3"]) || ss.getSheetByName("Technicians");
     if (!sheet) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "error",
-        message: "Sheet 'Technicians' not found"
+        message: "Sheet 'Technicians' not found. Please ensure a tab named 'Technicians' exists in this Google Sheet."
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -581,27 +609,50 @@ function doGet(e) {
       var mcTech = getColIdx(mColMap, ["technicianname", "technician", "tech"], 1);
       var mcComp = getColIdx(mColMap, ["company", "companyname"], 2);
       var mcVert = getColIdx(mColMap, ["vertical"], 3);
-      var mcSite = getColIdx(mColMap, ["sitename", "site"], 4);
-      var mcFlat = getColIdx(mColMap, ["flatno", "flat"], 5);
-      var mcOldMeter = getColIdx(mColMap, ["oldmeterno", "oldmeter"], 6);
+      var mcSite = getColIdx(mColMap, ["sitename", "site", "siteplant", "plant", "project"], 4);
+      var mcFlat = getColIdx(mColMap, ["flatno", "flat", "room", "house"], 5);
+      var mcOldMeter = getColIdx(mColMap, ["oldmeterno", "oldmeter", "oldmeterserial"], 6);
       var mcOldMake = getColIdx(mColMap, ["oldmetermake", "oldmake"], 7);
       var mcOldPhoto = getColIdx(mColMap, ["oldmeterphoto", "oldphoto"], 8);
-      var mcNewMeter = getColIdx(mColMap, ["newmeterno", "newmeter", "meter", "meterno"], 9);
+      var mcNewMeter = getColIdx(mColMap, ["newmeterno", "newmeter", "meter", "meterno", "meterserial", "serialno", "metersno", "newmeterserial", "serial"], 9);
       var mcNewMake = getColIdx(mColMap, ["newmetermake", "newmake", "make"], 10);
       var mcNewPhoto = getColIdx(mColMap, ["newmeterphoto", "newphoto"], 11);
       var mcRemark = getColIdx(mColMap, ["remark", "remarks"], 12);
       var mcId = getColIdx(mColMap, ["id", "recordid"], 13);
 
+      var seenSheetMeterIds = {};
+      var seenSheetMeterSerials = {};
       for (var m = 1; m < allMeterValues.length; m++) {
         var mRow = allMeterValues[m];
         var timeStampVal = mRow[mcTime];
         var siteNameVal = mRow[mcSite] ? String(mRow[mcSite]).trim() : "";
         var newMeterVal = mRow[mcNewMeter] ? String(mRow[mcNewMeter]).trim().toUpperCase() : "";
+        var rowRecId = mRow[mcId] ? String(mRow[mcId]).trim() : "";
+        if (!rowRecId) {
+          for (var rc = 0; rc < mRow.length; rc++) {
+            var cVal = String(mRow[rc] || "").trim();
+            if (cVal.indexOf("rec_") === 0 || cVal.indexOf("MTR_") === 0) {
+              rowRecId = cVal;
+              break;
+            }
+          }
+        }
+
+        // Skip formula/summary total rows
+        var siteUpper = siteNameVal.toUpperCase();
+        var meterUpper = newMeterVal.toUpperCase();
+        if (siteUpper.indexOf("TOTAL") !== -1 || meterUpper.indexOf("TOTAL") !== -1) continue;
+
+        // Deduplicate duplicate rows in spreadsheet by row ID if explicitly present
+        if (rowRecId && seenSheetMeterIds[rowRecId]) continue;
+        if (rowRecId) seenSheetMeterIds[rowRecId] = true;
 
         // Count as valid meter install if New Meter No or Site Name is present
-        if (newMeterVal !== "" || siteNameVal !== "") {
+        if (newMeterVal !== "" || siteNameVal !== "" || (mRow[mcFlat] && String(mRow[mcFlat]).trim() !== "")) {
           totalMeterInstall += 1;
-          if (newMeterVal !== "") existingMeterNos.push(newMeterVal);
+          if (newMeterVal !== "" && existingMeterNos.indexOf(newMeterVal) === -1) {
+            existingMeterNos.push(newMeterVal);
+          }
 
           // Check if installed Today
           var recDate = extractDatePart(timeStampVal);
@@ -610,7 +661,7 @@ function doGet(e) {
           }
 
           sheetRecords.push({
-            id: mRow[mcId] ? String(mRow[mcId]).trim() : ("meter_" + m + "_" + newMeterVal),
+            id: rowRecId || ("meter_" + m + "_" + newMeterVal),
             type: "MeterInstallation",
             installationDate: timeStampVal ? String(timeStampVal) : "",
             timestamp: timeStampVal ? String(timeStampVal) : "",
@@ -648,28 +699,52 @@ function doGet(e) {
       var icTech = getColIdx(iColMap, ["technicianname", "technician", "tech"], 1);
       var icComp = getColIdx(iColMap, ["company", "companyname"], 2);
       var icVert = getColIdx(iColMap, ["vertical"], 3);
-      var icSite = getColIdx(iColMap, ["sitename", "site"], 4);
+      var icSite = getColIdx(iColMap, ["sitename", "site", "siteplant", "plant", "project"], 4);
       var icLoc = getColIdx(iColMap, ["devicelocation", "location", "tower", "towerno"], 5);
-      var icDevNo = getColIdx(iColMap, ["deviceno", "device", "devicenumber"], 6);
-      var icQty = getColIdx(iColMap, ["infraqty", "qty", "quantity"], 7);
+      var icDevNo = getColIdx(iColMap, ["deviceno", "device", "devicenumber", "infraserial", "deviceserial", "infrano", "serialno", "serial"], 6);
+      var icQty = getColIdx(iColMap, ["infraqty", "qty", "quantity", "quantities", "infraquantity", "deviceqty", "totalqty", "nos", "count"], 7);
       var icPhoto = getColIdx(iColMap, ["devicephoto", "photo"], 8);
       var icRemark = getColIdx(iColMap, ["remark", "remarks"], 9);
       var icId = getColIdx(iColMap, ["id", "recordid"], 10);
 
+      var seenSheetInfraIds = {};
       for (var d = 1; d < allInfraValues.length; d++) {
         var iRow = allInfraValues[d];
         var iTimeStamp = iRow[icTime];
         var devNo = iRow[icDevNo] ? String(iRow[icDevNo]).trim().toUpperCase() : "";
         var siteVal = iRow[icSite] ? String(iRow[icSite]).trim() : "";
-        var qtyRaw = iRow[icQty]; // Column H = Infra Qty
-        var qtyNum = 1;
-        if (qtyRaw !== undefined && qtyRaw !== null && qtyRaw !== "") {
-          var parsedQty = parseFloat(String(qtyRaw).replace(/[^0-9.-]/g, ""));
-          qtyNum = isNaN(parsedQty) || parsedQty <= 0 ? 1 : parsedQty;
+        var locVal = iRow[icLoc] ? String(iRow[icLoc]).trim() : "";
+        var infraRowRecId = iRow[icId] ? String(iRow[icId]).trim() : "";
+        if (!infraRowRecId) {
+          for (var irc = 0; irc < iRow.length; irc++) {
+            var irVal = String(iRow[irc] || "").trim();
+            if (irVal.indexOf("rec_") === 0 || irVal.indexOf("INF_") === 0) {
+              infraRowRecId = irVal;
+              break;
+            }
+          }
         }
 
-        if (devNo !== "" || siteVal !== "") {
-          if (devNo !== "") existingDeviceNos.push(devNo);
+        // Skip formula/summary total rows
+        var siteValUpper = siteVal.toUpperCase();
+        var devNoUpper = devNo.toUpperCase();
+        if (siteValUpper.indexOf("TOTAL") !== -1 || devNoUpper.indexOf("TOTAL") !== -1) continue;
+
+        // Skip exact duplicate row IDs if explicitly present
+        if (infraRowRecId && seenSheetInfraIds[infraRowRecId]) continue;
+        if (infraRowRecId) seenSheetInfraIds[infraRowRecId] = true;
+
+        var qtyRaw = iRow[icQty]; // Column H = Infra Qty
+        var qtyNum = 1;
+        if (qtyRaw !== undefined && qtyRaw !== null && String(qtyRaw).trim() !== "") {
+          var parsedQty = parseFloat(String(qtyRaw).replace(/[^0-9.-]/g, ""));
+          qtyNum = isNaN(parsedQty) || parsedQty < 0 ? 0 : parsedQty;
+        }
+
+        if (devNo !== "" || siteVal !== "" || locVal !== "") {
+          if (devNo !== "" && existingDeviceNos.indexOf(devNo) === -1) {
+            existingDeviceNos.push(devNo);
+          }
           totalInfraInstall += qtyNum;
 
           var iDate = extractDatePart(iTimeStamp);
@@ -678,7 +753,7 @@ function doGet(e) {
           }
 
           sheetRecords.push({
-            id: iRow[icId] ? String(iRow[icId]).trim() : ("infra_" + d + "_" + devNo),
+            id: infraRowRecId || ("infra_" + d + "_" + (devNo || "row")),
             type: "InfraInstallation",
             installationDate: iTimeStamp ? String(iTimeStamp) : "",
             timestamp: iTimeStamp ? String(iTimeStamp) : "",
@@ -686,8 +761,8 @@ function doGet(e) {
             company: iRow[icComp] ? String(iRow[icComp]).trim() : "",
             vertical: iRow[icVert] ? String(iRow[icVert]).trim() : "",
             siteName: siteVal,
-            towerNo: iRow[icLoc] ? String(iRow[icLoc]).trim() : "",
-            deviceLocation: iRow[icLoc] ? String(iRow[icLoc]).trim() : "",
+            towerNo: locVal,
+            deviceLocation: locVal,
             deviceNo: devNo,
             infraQty: String(qtyNum),
             devicePhoto: iRow[icPhoto] ? String(iRow[icPhoto]).trim() : null,
@@ -743,8 +818,8 @@ function doPost(e) {
   var lock = LockService.getScriptLock();
   var hasLock = false;
   try {
-    // Acquire mutex lock (wait up to 30s) to prevent concurrent write collisions & race condition duplicates
-    hasLock = lock.tryLock(30000);
+    // Acquire mutex lock (wait up to 10s) to prevent concurrent write collisions & race condition duplicates
+    hasLock = lock.tryLock(10000);
 
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var meterSheet = findSheetSmart(ss, ["meter", "meters", "meterinstallation", "sheet1"]) || ss.getSheetByName("Meter") || ss.getSheetByName("Sheet1") || ss.getActiveSheet();
@@ -792,10 +867,21 @@ function doPost(e) {
       records = [records];
     }
 
-    // Pre-load existing meter numbers using smart header detection and deep scan
+    // Quick filter check: only scan the sheet relevant to incoming records for ultra-fast saves (1-2s)
+    var hasMeterRecord = false;
+    var hasInfraRecord = false;
+    for (var ri = 0; ri < records.length; ri++) {
+      if (!records[ri]) continue;
+      if (records[ri].type === "MeterInstallation") hasMeterRecord = true;
+      if (records[ri].type === "InfraInstallation") hasInfraRecord = true;
+    }
+
     var sheetMeterMap = {};
+    var sheetDeviceMap = {};
     var sheetRecordIdMap = {};
-    if (meterSheet && meterSheet.getLastRow() > 1) {
+
+    // 1. Pre-load existing meter numbers & IDs only if saving meter records
+    if (hasMeterRecord && meterSheet && meterSheet.getLastRow() > 1) {
       var mMaxCols = Math.max(meterSheet.getLastColumn(), 14);
       var mAllValues = meterSheet.getRange(1, 1, meterSheet.getLastRow(), mMaxCols).getValues();
       var mHeader = mAllValues[0];
@@ -808,14 +894,23 @@ function doPost(e) {
         var mv = mRowVal[mcNewMeter];
         registerSerial(sheetMeterMap, mv);
         var recId = mRowVal[mcId];
-        if (recId) sheetRecordIdMap[String(recId).trim()] = true;
+        if (recId) {
+          sheetRecordIdMap[String(recId).trim().toUpperCase()] = true;
+          sheetRecordIdMap[String(recId).trim()] = true;
+        }
+        for (var c = 0; c < mRowVal.length; c++) {
+          var cellVal = String(mRowVal[c] || '').trim();
+          if (cellVal.indexOf('rec_') === 0 || cellVal.indexOf('MTR_') === 0) {
+            sheetRecordIdMap[cellVal.toUpperCase()] = true;
+            sheetRecordIdMap[cellVal] = true;
+          }
+        }
       }
     }
 
-    // Pre-load existing device numbers using smart header detection
-    var sheetDeviceMap = {};
+    // 2. Pre-load existing device numbers & IDs only if saving infra records
     var targetInfra = infraSheet || meterSheet;
-    if (targetInfra && targetInfra.getLastRow() > 1) {
+    if (hasInfraRecord && targetInfra && targetInfra.getLastRow() > 1) {
       var iMaxCols = Math.max(targetInfra.getLastColumn(), 11);
       var iAllValues = targetInfra.getRange(1, 1, targetInfra.getLastRow(), iMaxCols).getValues();
       var iHeader = iAllValues[0];
@@ -828,7 +923,17 @@ function doPost(e) {
         var dv = iRowVal[icDevNo];
         registerSerial(sheetDeviceMap, dv);
         var recId = iRowVal[icId];
-        if (recId) sheetRecordIdMap[String(recId).trim()] = true;
+        if (recId) {
+          sheetRecordIdMap[String(recId).trim().toUpperCase()] = true;
+          sheetRecordIdMap[String(recId).trim()] = true;
+        }
+        for (var ic = 0; ic < iRowVal.length; ic++) {
+          var iCellVal = String(iRowVal[ic] || '').trim();
+          if (iCellVal.indexOf('rec_') === 0 || iCellVal.indexOf('INF_') === 0) {
+            sheetRecordIdMap[iCellVal.toUpperCase()] = true;
+            sheetRecordIdMap[iCellVal] = true;
+          }
+        }
       }
     }
 
@@ -852,25 +957,26 @@ function doPost(e) {
       }
 
       // Check for duplicate Record ID (network retry or multi-sync)
-      if (r.id && sheetRecordIdMap[String(r.id).trim()]) {
-        deduplicatedCount++;
-        continue;
-      }
+      var cleanId = r.id ? String(r.id).trim().toUpperCase() : "";
+      var isIdDuplicate = cleanId && (sheetRecordIdMap[cleanId] || sheetRecordIdMap[String(r.id).trim()]);
 
       if (r.type === "MeterInstallation") {
-        if (r.newMeterNo && isDuplicateSerial(sheetMeterMap, r.newMeterNo)) {
+        var isSerialDuplicate = r.newMeterNo && isDuplicateSerial(sheetMeterMap, r.newMeterNo);
+
+        // CHECK EITHER ID OR SERIAL NUMBER: If either is already in Google Sheet, block duplicate!
+        if (isIdDuplicate || isSerialDuplicate) {
           deduplicatedCount++;
           continue;
         }
 
-        // Save Old Meter Photo in Google Drive
+        // Save Old Meter Photo in Google Drive (Fast with WebP/JPG dynamic extension)
         var oldPhotoUrl = "";
         if (r.oldMeterPhoto) {
           var oldName = "OldMeter_" + (r.flatNo || "flat") + "_" + (r.oldMeterNo || "meter") + "_" + timePrefix + ".jpg";
           oldPhotoUrl = savePhotoToDrive(r.oldMeterPhoto, oldName, "Meter_Infra_Photos");
         }
 
-        // Save New Meter Photo in Google Drive
+        // Save New Meter Photo in Google Drive (Fast with WebP/JPG dynamic extension)
         var newPhotoUrl = "";
         if (r.newMeterPhoto) {
           var newName = "NewMeter_" + (r.flatNo || "flat") + "_" + (r.newMeterNo || "meter") + "_" + timePrefix + ".jpg";
@@ -897,15 +1003,21 @@ function doPost(e) {
           meterId
         ]);
         registerSerial(sheetMeterMap, r.newMeterNo);
-        if (meterId) sheetRecordIdMap[meterId] = true;
+        if (meterId) {
+          sheetRecordIdMap[meterId.toUpperCase()] = true;
+          sheetRecordIdMap[meterId] = true;
+        }
         newlyAddedCount++;
       } else if (r.type === "InfraInstallation") {
-        if (r.deviceNo && isDuplicateSerial(sheetDeviceMap, r.deviceNo)) {
+        var isSerialDuplicate = r.deviceNo && isDuplicateSerial(sheetDeviceMap, r.deviceNo);
+
+        // CHECK EITHER ID OR SERIAL NUMBER: If either is already in Google Sheet, block duplicate!
+        if (isIdDuplicate || isSerialDuplicate) {
           deduplicatedCount++;
           continue;
         }
 
-        // Save Device Photo in Google Drive
+        // Save Device Photo in Google Drive (Fast with WebP/JPG dynamic extension)
         var devicePhotoUrl = "";
         if (r.devicePhoto) {
           var devName = "Device_" + (r.deviceLocation || r.towerNo || "loc") + "_" + (r.deviceNo || "dev") + "_" + timePrefix + ".jpg";
@@ -929,15 +1041,21 @@ function doPost(e) {
           devId
         ]);
         registerSerial(sheetDeviceMap, r.deviceNo);
-        if (devId) sheetRecordIdMap[devId] = true;
+        if (devId) {
+          sheetRecordIdMap[devId.toUpperCase()] = true;
+          sheetRecordIdMap[devId] = true;
+        }
         newlyAddedCount++;
       }
     }
 
+
+
     return ContentService.createTextOutput(JSON.stringify({
-      status: "success",
+      status: newlyAddedCount > 0 ? "success" : (deduplicatedCount > 0 ? "duplicate" : "success"),
       count: newlyAddedCount,
       deduplicated: deduplicatedCount,
+      alreadyExists: deduplicatedCount > 0 && newlyAddedCount === 0,
       message: newlyAddedCount > 0
         ? "Successfully saved " + newlyAddedCount + " record(s) to Google Sheets!"
         : "Record(s) already saved in Google Sheets. Deduplication verified."

@@ -46,7 +46,7 @@ export const PhotoModal: React.FC<PhotoModalProps> = ({
             </button>
             <a
               href={imageUrl}
-              download={`${title.replace(/\s+/g, '_')}.jpg`}
+              download={`${title.replace(/\s+/g, '_')}.${imageUrl.includes('image/webp') || imageUrl.includes('.webp') ? 'webp' : 'jpg'}`}
               className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300"
               title="Download image"
             >

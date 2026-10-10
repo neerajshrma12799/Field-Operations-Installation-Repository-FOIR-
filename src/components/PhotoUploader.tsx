@@ -57,14 +57,14 @@ export const PhotoUploader: React.FC<PhotoUploaderProps> = ({
         {stats && value && (
           <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 shadow-xs">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-            HD Clear ({stats.comp} KB - Sharp &amp; Readable)
+            HD Clear ({stats.comp} KB - WebP HD)
           </span>
         )}
       </div>
 
       <input
         type="file"
-        accept="image/*"
+        accept="image/*,image/webp,image/jpeg,image/png,image/heic,image/heif"
         capture="environment"
         className="hidden"
         ref={fileInputCameraRef}
@@ -72,7 +72,7 @@ export const PhotoUploader: React.FC<PhotoUploaderProps> = ({
       />
       <input
         type="file"
-        accept="image/*"
+        accept="image/*,image/webp,image/jpeg,image/png,image/heic,image/heif"
         className="hidden"
         ref={fileInputGalleryRef}
         onChange={handleFileChange}
